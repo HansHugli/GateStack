@@ -10,6 +10,7 @@ export interface ComputerHook {
   state: CpuState | null;
   memory: number[];
   trace: CycleTrace | null;
+  traceHistory: CpuState[];
   isRunning: boolean;
   isReady: boolean;
 
@@ -25,20 +26,26 @@ export interface ComputerHook {
   toggleBreakpoint: (addr: number) => void;
 }
 
+const HISTORY_SIZE = 128;
+
 export function useComputer(initialProgram?: number[]): ComputerHook {
   const computerRef = useRef<IComputer | null>(null);
   const runningRef = useRef(false);
-  const speedRef = useRef(100); // cycles per animation frame
+  const speedRef = useRef(100);
+  const historyRef = useRef<CpuState[]>([]);
 
   const [state, setState] = useState<CpuState | null>(null);
   const [memory, setMemory] = useState<number[]>(new Array(256).fill(0));
   const [trace, setTrace] = useState<CycleTrace | null>(null);
+  const [traceHistory, setTraceHistory] = useState<CpuState[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
   // Initialize the computer (loads WASM or mock)
   useEffect(() => {
+    let cancelled = false;
     createComputer().then(computer => {
+      if (cancelled) return; // React strict mode cleanup
       computerRef.current = computer;
       if (initialProgram) {
         computer.loadProgram(new Uint8Array(initialProgram));
@@ -46,19 +53,29 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
       setIsReady(true);
       refreshState();
     });
+    return () => { cancelled = true; };
   }, []);
 
   const refreshState = useCallback(() => {
     const c = computerRef.current;
     if (!c) return;
-    setState(c.getState());
+    const s = c.getState();
+    setState(s);
     setMemory(c.getAllMemory());
+    return s;
+  }, []);
+
+  const recordHistory = useCallback((s: CpuState) => {
+    historyRef.current = [...historyRef.current.slice(-(HISTORY_SIZE - 1)), s];
+    setTraceHistory([...historyRef.current]);
   }, []);
 
   const loadProgram = useCallback((bytes: number[]) => {
     const c = computerRef.current;
     if (!c) return;
     c.loadProgram(new Uint8Array(bytes));
+    historyRef.current = [];
+    setTraceHistory([]);
     refreshState();
   }, [refreshState]);
 
@@ -67,8 +84,9 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     if (!c) return;
     const t = c.step();
     setTrace(t);
-    refreshState();
-  }, [refreshState]);
+    const s = refreshState();
+    if (s) recordHistory(s);
+  }, [refreshState, recordHistory]);
 
   const run = useCallback(() => {
     const c = computerRef.current;
@@ -78,18 +96,29 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     setIsRunning(true);
 
     const tick = () => {
-      if (!runningRef.current || !computerRef.current) return;
-      computerRef.current.run(speedRef.current);
-      refreshState();
-      if (!computerRef.current.isHalted()) {
-        requestAnimationFrame(tick);
-      } else {
+      if (!runningRef.current || !computerRef.current) {
+        runningRef.current = false;
+        setIsRunning(false);
+        return;
+      }
+      try {
+        computerRef.current.run(speedRef.current);
+        const s = refreshState();
+        if (s) recordHistory(s);
+        if (!computerRef.current.isHalted()) {
+          requestAnimationFrame(tick);
+        } else {
+          runningRef.current = false;
+          setIsRunning(false);
+        }
+      } catch (e) {
+        console.error('Run tick error:', e);
         runningRef.current = false;
         setIsRunning(false);
       }
     };
     requestAnimationFrame(tick);
-  }, [refreshState]);
+  }, [refreshState, recordHistory]);
 
   const pause = useCallback(() => {
     runningRef.current = false;
@@ -99,6 +128,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const reset = useCallback(() => {
     pause();
     computerRef.current?.reset();
+    historyRef.current = [];
+    setTraceHistory([]);
     refreshState();
     setTrace(null);
   }, [pause, refreshState]);
@@ -106,6 +137,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const hardReset = useCallback(() => {
     pause();
     computerRef.current?.hardReset();
+    historyRef.current = [];
+    setTraceHistory([]);
     refreshState();
     setTrace(null);
   }, [pause, refreshState]);
@@ -125,7 +158,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   }, []);
 
   return {
-    state, memory, trace, isRunning, isReady,
+    state, memory, trace, traceHistory, isRunning, isReady,
     loadProgram, step, run, pause, reset, hardReset, setSpeed, poke, toggleBreakpoint,
   };
 }

@@ -66,8 +66,8 @@ impl Computer {
     ///
     /// Usage in JS:
     ///   const cyclesRan = computer.run(10000); // Run up to 10K cycles
-    pub fn run(&mut self, max_cycles: u64) -> u64 {
-        self.cpu.run(max_cycles)
+    pub fn run(&mut self, max_cycles: u32) -> u32 {
+        self.cpu.run(max_cycles as u64) as u32
     }
 
     /// Get the full CPU state as JSON (for the dashboard display).
@@ -122,8 +122,8 @@ impl Computer {
     }
 
     /// Get cycle count
-    pub fn get_cycle_count(&self) -> u64 {
-        self.cpu.cycle_count
+    pub fn get_cycle_count(&self) -> u32 {
+        self.cpu.cycle_count as u32
     }
 
     /// Get a specific register value (0-3)

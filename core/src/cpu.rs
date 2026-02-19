@@ -21,7 +21,7 @@
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
-use crate::alu::{alu_execute, AluOp, AluResult};
+use crate::alu::{alu_execute, AluOp};
 use crate::memory::Ram;
 use crate::trace::{CycleTrace, MicroStep, BusSource};
 
@@ -258,6 +258,14 @@ impl Cpu {
         self.bus = self.ir;
         trace.push(MicroStep::bus_transfer(BusSource::RAM, "IR", self.bus));
 
+        // Check for HALT (0x00 = ADD R0,R0 used as halt sentinel)
+        if self.ir == 0x00 {
+            self.halted = true;
+            trace.halted = true;
+            trace.opcode = Some(Opcode::Add);
+            return trace;
+        }
+
         // Step 3: IAR + 1 → IAR (increment program counter)
         self.iar = self.iar.wrapping_add(1);
         trace.push(MicroStep::increment_iar(self.iar));
@@ -279,9 +287,10 @@ impl Cpu {
 
         // ── EXECUTE (your Stepper7 steps 4-6) ────────────────────────
         match opcode {
-            // ALU Operations: RegA op RegB → ACC
-            op if op.is_alu() => {
-                let alu_op = op.to_alu_op().unwrap();
+            // ALU Operations — match explicitly
+            Opcode::Add | Opcode::Shr | Opcode::Shl | Opcode::Not |
+            Opcode::And | Opcode::Or  | Opcode::Xor | Opcode::Cmp => {
+                let alu_op = opcode.to_alu_op().unwrap();
 
                 // Load RegB → TMP
                 self.tmp = self.get_reg(reg_b);
@@ -307,9 +316,11 @@ impl Cpu {
                 };
                 trace.set_flags(self.flags);
 
-                // ACC → RegA (store result back)
-                self.set_reg(reg_a, self.acc);
-                trace.push(MicroStep::bus_transfer(BusSource::ACC, &format!("R{}", reg_a as u8), self.acc));
+                // ACC → RegA (store result back) — but NOT for CMP
+                if opcode != Opcode::Cmp {
+                    self.set_reg(reg_a, self.acc);
+                    trace.push(MicroStep::bus_transfer(BusSource::ACC, &format!("R{}", reg_a as u8), self.acc));
+                }
             }
 
             // LOAD: RAM[next_byte] → RegA
@@ -388,15 +399,15 @@ impl Cpu {
     }
 
     /// Run multiple cycles (for "Run" mode in the UI).
+    /// Uses fast execution without trace recording.
     /// Stops at breakpoints or after max_cycles.
-    /// Returns the number of cycles actually executed.
     pub fn run(&mut self, max_cycles: u64) -> u64 {
         let mut executed = 0;
         for _ in 0..max_cycles {
             if self.halted {
                 break;
             }
-            self.step();
+            self.step_fast();
             executed += 1;
 
             // Check breakpoints
@@ -405,6 +416,90 @@ impl Cpu {
             }
         }
         executed
+    }
+
+    /// Fast execution without trace recording (for Run mode)
+    fn step_fast(&mut self) {
+        if self.halted { return; }
+
+        // FETCH
+        self.ram.set_mar(self.iar);
+        self.ir = self.ram.read();
+        self.iar = self.iar.wrapping_add(1);
+
+        // Handle HALT (opcode 0x00 = ADD R0, R0 used as halt sentinel)
+        if self.ir == 0x00 {
+            self.halted = true;
+            return;
+        }
+
+        // DECODE
+        let opcode_bits = (self.ir >> 4) & 0x0F;
+        let reg_a = RegId::from_bits((self.ir >> 2) & 0x03);
+        let reg_b = RegId::from_bits(self.ir & 0x03);
+
+        let opcode = match Opcode::from_bits(opcode_bits) {
+            Some(op) => op,
+            None => { self.halted = true; return; }
+        };
+
+        // EXECUTE
+        match opcode {
+            // ALU operations — match each explicitly to avoid guard issues
+            Opcode::Add | Opcode::Shr | Opcode::Shl | Opcode::Not |
+            Opcode::And | Opcode::Or  | Opcode::Xor | Opcode::Cmp => {
+                let alu_op = opcode.to_alu_op().unwrap();
+                self.tmp = self.get_reg(reg_b);
+                let a_val = self.get_reg(reg_a);
+                let result = alu_execute(a_val, self.tmp, alu_op, self.flags.carry);
+                self.acc = result.value;
+                self.flags = Flags {
+                    carry: result.carry,
+                    a_larger: result.a_larger,
+                    equal: result.equal,
+                    zero: result.zero,
+                };
+                if opcode != Opcode::Cmp {
+                    self.set_reg(reg_a, self.acc);
+                }
+            }
+            Opcode::Load => {
+                self.ram.set_mar(self.iar);
+                let addr = self.ram.read();
+                self.iar = self.iar.wrapping_add(1);
+                self.ram.set_mar(addr);
+                self.set_reg(reg_a, self.ram.read());
+            }
+            Opcode::Store => {
+                let addr = self.ram.read_next(&mut self.iar);
+                self.ram.set_mar(addr);
+                self.ram.write(self.get_reg(reg_a));
+            }
+            Opcode::Data => {
+                let value = self.ram.read_next(&mut self.iar);
+                self.set_reg(reg_a, value);
+            }
+            Opcode::Jmpr => {
+                self.iar = self.get_reg(reg_a);
+            }
+            Opcode::Jmp => {
+                self.iar = self.ram.read_next(&mut self.iar);
+            }
+            Opcode::Jc => {
+                let addr = self.ram.read_next(&mut self.iar);
+                if self.flags.carry { self.iar = addr; }
+            }
+            Opcode::Ja => {
+                let addr = self.ram.read_next(&mut self.iar);
+                if self.flags.a_larger { self.iar = addr; }
+            }
+            Opcode::Je => {
+                let addr = self.ram.read_next(&mut self.iar);
+                if self.flags.equal { self.iar = addr; }
+            }
+        }
+
+        self.cycle_count += 1;
     }
 
     /// Add a breakpoint at the given address
@@ -417,24 +512,6 @@ impl Cpu {
     /// Remove a breakpoint
     pub fn remove_breakpoint(&mut self, addr: u8) {
         self.breakpoints.retain(|&a| a != addr);
-    }
-}
-
-// Helper: Ram needs a convenience method for fetching the next program byte
-impl Ram {
-    /// Read next byte and advance the IAR (instruction pointer).
-    /// Used by instructions that have an operand in the next byte.
-    pub fn read_next(&self, iar: &mut u8) -> u8 {
-        self.set_mar_from(*iar);
-        let value = self.data()[*iar as usize];
-        *iar = iar.wrapping_add(1);
-        value
-    }
-
-    fn set_mar_from(&self, _addr: u8) {
-        // In the real implementation, we'd set MAR here.
-        // Since we access data[] directly, this is a no-op placeholder.
-        // The trace system will still record the MAR change.
     }
 }
 

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ram {
     /// 256 bytes of RAM — replaces your 256 RAMRegister8 objects
-    data: [u8; 256],
+    data: Vec<u8>,
 
     /// Memory Address Register — selects which byte to read/write.
     /// In your C#, this was a ByteGate8 inside RAM256.
@@ -35,7 +35,7 @@ impl Ram {
     /// Create a new RAM with all zeros (like your C# constructor)
     pub fn new() -> Self {
         Ram {
-            data: [0u8; 256],
+            data: vec![0u8; 256],
             mar: 0,
         }
     }
@@ -78,8 +78,15 @@ impl Ram {
     }
 
     /// Get a reference to the entire RAM contents (for the UI to display).
-    pub fn data(&self) -> &[u8; 256] {
+    pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Read the byte at the given address and advance it (for fetching operands).
+    pub fn read_next(&self, iar: &mut u8) -> u8 {
+        let val = self.data[*iar as usize];
+        *iar = iar.wrapping_add(1);
+        val
     }
 
     /// Get a slice of RAM (for partial UI updates — more efficient).
@@ -91,7 +98,7 @@ impl Ram {
 
     /// Clear all RAM to zeros
     pub fn clear(&mut self) {
-        self.data = [0u8; 256];
+        self.data.fill(0);
         self.mar = 0;
     }
 }

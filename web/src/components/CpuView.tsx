@@ -12,76 +12,103 @@ interface Props {
 export default function CpuView({ state, trace }: Props) {
   if (!state) return null;
 
-  const regStyle = (isActive: boolean) => ({
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '6px 10px',
-    background: isActive ? '#1e3a5f' : '#0f172a',
-    borderRadius: '6px',
-    marginBottom: '4px',
-    border: `1px solid ${isActive ? '#3b82f6' : '#1e293b'}`,
-    transition: 'all 0.15s',
-  });
-
-  const labelStyle = { fontSize: '0.78rem', color: '#94a3b8', fontWeight: 600 as const };
-  const valueStyle = (isActive: boolean) => ({
-    fontFamily: "'Cascadia Code', 'Fira Code', monospace",
-    fontSize: '0.82rem',
-    color: isActive ? '#60a5fa' : '#e2e8f0',
-    fontWeight: 700 as const,
-  });
-
   // Determine which register was last written (from trace)
   const activeReg = [...(trace?.steps ?? [])].reverse().find(
     (s: MicroStep) => s.BusTransfer?.dest?.startsWith('R')
   )?.BusTransfer?.dest;
 
   return (
-    <div style={{ padding: '12px', borderBottom: '1px solid #1e293b' }}>
-      <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#fcd34d', marginBottom: '10px' }}>
-        📟 CPU Registers
+    <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+      {/* Section header */}
+      <div style={{
+        fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted)',
+        textTransform: 'uppercase' as const, letterSpacing: '1px',
+        marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <div style={{
+          width: 3, height: 12, borderRadius: 2,
+          background: 'var(--accent-amber)',
+        }} />
+        Registers
       </div>
 
       {/* General Purpose Registers */}
       {state.r.map((val, i) => {
-        const isActive = activeReg === `R${i}`;
+        const name = `R${i}`;
+        const isActive = activeReg === name;
         return (
-          <div key={i} style={regStyle(isActive)}>
-            <span style={labelStyle}>R{i}</span>
-            <span style={valueStyle(isActive)}>
-              {hex(val)} <span style={{ color: '#94a3b8', fontSize: '0.7rem' }}>{val}</span> <span style={{ color: '#475569', fontSize: '0.65rem' }}>{bin(val)}</span>
-            </span>
+          <div key={i} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '4px 8px', marginBottom: 2,
+            background: isActive ? 'var(--accent-blue-dim)' : 'var(--bg-elevated)',
+            borderRadius: 'var(--radius-sm)',
+            border: `1px solid ${isActive ? '#2563eb40' : 'var(--border-subtle)'}`,
+            transition: 'all 0.15s',
+          }}>
+            <span style={{
+              fontSize: '0.72rem', color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+              fontWeight: 700, fontFamily: 'var(--font-mono)', minWidth: 24,
+            }}>{name}</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.78rem',
+                color: isActive ? '#93c5fd' : 'var(--text-primary)',
+                fontWeight: 700,
+              }}>{hex(val)}</span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.65rem',
+                color: 'var(--text-muted)',
+              }}>{val}</span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.58rem',
+                color: 'var(--text-dim)', letterSpacing: '0.5px',
+              }}>{bin(val)}</span>
+            </div>
           </div>
         );
       })}
 
       {/* Special Registers */}
-      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#64748b', marginTop: '12px', marginBottom: '6px' }}>
-        SPECIAL
+      <div style={{
+        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-dim)',
+        textTransform: 'uppercase' as const, letterSpacing: '0.8px',
+        marginTop: 10, marginBottom: 4,
+      }}>
+        Special
       </div>
 
       {[
-        { label: 'ACC', value: state.acc, desc: 'Accumulator' },
-        { label: 'IAR', value: state.iar, desc: 'Instr. Address' },
-        { label: 'IR', value: state.ir, desc: 'Instruction Reg' },
-        { label: 'TMP', value: state.tmp, desc: 'Temporary' },
-        { label: 'BUS', value: state.bus, desc: 'Main Bus' },
-      ].map(({ label, value, desc }) => (
-        <div key={label} style={regStyle(false)}>
-          <div>
-            <span style={labelStyle}>{label}</span>
-            <span style={{ fontSize: '0.6rem', color: '#475569', marginLeft: '6px' }}>{desc}</span>
-          </div>
-          <span style={valueStyle(false)}>{hex(value)} <span style={{ color: '#94a3b8', fontSize: '0.7rem' }}>{value}</span></span>
+        { label: 'ACC', value: state.acc },
+        { label: 'IAR', value: state.iar },
+        { label: 'IR',  value: state.ir  },
+        { label: 'TMP', value: state.tmp },
+        { label: 'BUS', value: state.bus },
+      ].map(({ label, value }) => (
+        <div key={label} style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '3px 8px', marginBottom: 1,
+          borderRadius: 'var(--radius-sm)',
+        }}>
+          <span style={{
+            fontSize: '0.68rem', color: 'var(--text-muted)',
+            fontWeight: 600, fontFamily: 'var(--font-mono)', minWidth: 28,
+          }}>{label}</span>
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: '0.72rem',
+            color: 'var(--text-secondary)',
+          }}>{hex(value)} <span style={{ fontSize: '0.6rem', color: 'var(--text-dim)' }}>{value}</span></span>
         </div>
       ))}
 
       {/* Flags */}
-      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#64748b', marginTop: '12px', marginBottom: '6px' }}>
-        FLAGS
+      <div style={{
+        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-dim)',
+        textTransform: 'uppercase' as const, letterSpacing: '0.8px',
+        marginTop: 10, marginBottom: 6,
+      }}>
+        Flags
       </div>
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 4 }}>
         {[
           { label: 'C', value: state.flags.carry, name: 'Carry' },
           { label: 'Z', value: state.flags.zero, name: 'Zero' },
@@ -92,13 +119,14 @@ export default function CpuView({ state, trace }: Props) {
             key={label}
             title={name}
             style={{
-              padding: '3px 10px',
-              borderRadius: '4px',
-              fontSize: '0.75rem',
-              fontWeight: 700,
-              background: value ? '#065f46' : '#1e293b',
-              color: value ? '#34d399' : '#475569',
-              border: `1px solid ${value ? '#059669' : '#334155'}`,
+              padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+              fontSize: '0.68rem', fontWeight: 700,
+              fontFamily: 'var(--font-mono)',
+              background: value ? 'var(--accent-green-dim)' : 'var(--bg-elevated)',
+              color: value ? 'var(--accent-green)' : 'var(--text-dim)',
+              border: `1px solid ${value ? '#05966930' : 'var(--border-subtle)'}`,
+              transition: 'all 0.15s',
+              flex: 1, textAlign: 'center' as const,
             }}
           >
             {label}
@@ -106,16 +134,23 @@ export default function CpuView({ state, trace }: Props) {
         ))}
       </div>
 
-      {/* Last instruction info from trace */}
+      {/* Last instruction */}
       {trace?.opcode && (
         <div style={{
-          marginTop: '12px', padding: '8px 10px', background: '#1a1a2e',
-          borderRadius: '6px', borderLeft: '3px solid #6366f1', fontSize: '0.75rem',
+          marginTop: 10, padding: '6px 8px',
+          background: 'var(--bg-elevated)',
+          borderRadius: 'var(--radius-sm)',
+          borderLeft: '2px solid var(--accent-purple)',
+          fontSize: '0.7rem',
         }}>
-          <span style={{ color: '#a78bfa', fontWeight: 700 }}>{trace.opcode}</span>
-          <span style={{ color: '#64748b' }}> {trace.reg_a}, {trace.reg_b}</span>
-          <span style={{ color: '#475569', display: 'block', marginTop: '2px' }}>
-            @ 0x{trace.address.toString(16).padStart(2, '0').toUpperCase()} · Cycle {trace.cycle}
+          <span style={{ color: 'var(--accent-purple)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+            {trace.opcode}
+          </span>
+          <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            {' '}{trace.reg_a}, {trace.reg_b}
+          </span>
+          <span style={{ color: 'var(--text-dim)', fontSize: '0.6rem', display: 'block', marginTop: 1, fontFamily: 'var(--font-mono)' }}>
+            @{hex(trace.address)} · cycle {trace.cycle}
           </span>
         </div>
       )}

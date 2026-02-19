@@ -250,19 +250,146 @@ class MockComputer implements IComputer {
   poke(address: number, value: number): void { this.memory[address & 0xFF] = value & 0xFF; }
 }
 
-// ── Factory ──────────────────────────────────────────────────────────────
+// ── WASM Adapter (wraps the Rust Computer for the IComputer interface) ──
 
-const USE_MOCK = true; // Set to false once WASM is compiled
+class WasmComputer implements IComputer {
+  private wasm: any;
+  private corrupted = false;
 
-export async function createComputer(): Promise<IComputer> {
-  if (USE_MOCK) {
-    console.log('🔧 Using mock computer (WASM not yet built)');
-    return new MockComputer();
+  constructor(wasmComputer: any) {
+    this.wasm = wasmComputer;
   }
 
-  // When WASM is ready, this will load and wrap it:
-  // const wasm = await import('./wasm/gatestack_core');
-  // await wasm.default();
-  // return new WasmComputer(new wasm.Computer());
-  throw new Error('WASM not yet available');
+  private check(): boolean {
+    if (this.corrupted) {
+      console.warn('🦀 WASM object corrupted, operations will be no-ops');
+      return false;
+    }
+    return true;
+  }
+
+  private markCorrupted(method: string, e: any): void {
+    if (String(e).includes('recursive use') || String(e).includes('memory access out of bounds')) {
+      console.error(`🦀 WASM object corrupted after ${method}() — need page reload`);
+      this.corrupted = true;
+    }
+  }
+
+  loadProgram(bytes: Uint8Array): void {
+    if (!this.check()) return;
+    try {
+      this.wasm.load_program(bytes);
+    } catch (e) {
+      console.error('WASM loadProgram() error:', e);
+      this.markCorrupted('loadProgram', e);
+    }
+  }
+
+  step(): CycleTrace {
+    if (!this.check()) return { address: 0, opcode: null, reg_a: null, reg_b: null,
+             steps: [], flags: null, cycle: 0, halted: true, error: 'WASM corrupted' };
+    try {
+      const json = this.wasm.step();
+      return JSON.parse(json);
+    } catch (e) {
+      console.error('WASM step() error:', e);
+      this.markCorrupted('step', e);
+      return { address: 0, opcode: null, reg_a: null, reg_b: null,
+               steps: [], flags: null, cycle: 0, halted: true, error: String(e) };
+    }
+  }
+
+  run(maxCycles: number): number {
+    if (!this.check()) return 0;
+    try {
+      const result = this.wasm.run(maxCycles);
+      return typeof result === 'bigint' ? Number(result) : result;
+    } catch (e) {
+      console.error('WASM run() error:', e);
+      this.markCorrupted('run', e);
+      return 0;
+    }
+  }
+
+  getState(): CpuState {
+    if (!this.check()) return {
+      r: [0, 0, 0, 0], acc: 0, tmp: 0, iar: 0, ir: 0,
+      flags: { carry: false, a_larger: false, equal: false, zero: true },
+      bus: 0, halted: true, cycle_count: 0,
+    };
+    try {
+      const json = this.wasm.get_state();
+      const raw = JSON.parse(json);
+      return {
+        r: raw.r ?? [0, 0, 0, 0],
+        acc: raw.acc ?? 0,
+        tmp: raw.tmp ?? 0,
+        iar: raw.iar ?? 0,
+        ir: raw.ir ?? 0,
+        flags: raw.flags ?? { carry: false, a_larger: false, equal: false, zero: true },
+        bus: raw.bus ?? 0,
+        halted: raw.halted ?? false,
+        cycle_count: typeof raw.cycle_count === 'string' ? parseInt(raw.cycle_count) : (raw.cycle_count ?? 0),
+      };
+    } catch (e) {
+      console.error('WASM getState() error:', e);
+      this.markCorrupted('getState', e);
+      return {
+        r: [0, 0, 0, 0], acc: 0, tmp: 0, iar: 0, ir: 0,
+        flags: { carry: false, a_larger: false, equal: false, zero: true },
+        bus: 0, halted: true, cycle_count: 0,
+      };
+    }
+  }
+
+  getMemory(start: number, len: number): number[] {
+    if (!this.check()) return new Array(len).fill(0);
+    try {
+      return JSON.parse(this.wasm.get_memory(start, len));
+    } catch (e) {
+      console.error('WASM getMemory() error:', e);
+      this.markCorrupted('getMemory', e);
+      return new Array(len).fill(0);
+    }
+  }
+
+  getAllMemory(): number[] {
+    if (!this.check()) return new Array(256).fill(0);
+    try {
+      return JSON.parse(this.wasm.get_all_memory());
+    } catch (e) {
+      console.error('WASM getAllMemory() error:', e);
+      this.markCorrupted('getAllMemory', e);
+      return new Array(256).fill(0);
+    }
+  }
+
+  reset(): void { if (this.check()) try { this.wasm.reset(); } catch (e) { this.markCorrupted('reset', e); } }
+  hardReset(): void { if (this.check()) try { this.wasm.hard_reset(); } catch (e) { this.markCorrupted('hardReset', e); } }
+  addBreakpoint(addr: number): void { if (this.check()) try { this.wasm.add_breakpoint(addr); } catch (e) { this.markCorrupted('addBreakpoint', e); } }
+  removeBreakpoint(addr: number): void { if (this.check()) try { this.wasm.remove_breakpoint(addr); } catch (e) { this.markCorrupted('removeBreakpoint', e); } }
+  isHalted(): boolean { if (!this.check()) return true; try { return this.wasm.is_halted(); } catch (e) { this.markCorrupted('isHalted', e); return true; } }
+  getPc(): number { if (!this.check()) return 0; try { return this.wasm.get_pc(); } catch (e) { this.markCorrupted('getPc', e); return 0; } }
+  getCycleCount(): number { if (!this.check()) return 0; try { const v = this.wasm.get_cycle_count(); return typeof v === 'bigint' ? Number(v) : v; } catch (e) { this.markCorrupted('getCycleCount', e); return 0; } }
+  getRegister(index: number): number { if (!this.check()) return 0; try { return this.wasm.get_register(index); } catch (e) { this.markCorrupted('getRegister', e); return 0; } }
+  poke(address: number, value: number): void { if (this.check()) try { this.wasm.poke(address, value); } catch (e) { this.markCorrupted('poke', e); } }
+}
+
+// ── Factory ──────────────────────────────────────────────────────────────
+
+export async function createComputer(): Promise<IComputer> {
+  // WASM core is compiled but has serialization issues — using mock for now.
+  // To test WASM: uncomment the block below and run scripts\build-wasm.bat
+  //
+  // try {
+  //   const wasm = await import('./wasm/gatestack_core');
+  //   await wasm.default();
+  //   console.log('🦀 Using Rust/WASM core');
+  //   return new WasmComputer(new wasm.Computer());
+  // } catch (e) {
+  //   console.warn('WASM failed:', (e as Error).message);
+  // }
+
+  console.log('🔧 Using JavaScript computer engine');
+  return new MockComputer();
 }
