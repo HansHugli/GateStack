@@ -1,0 +1,22 @@
+[package]
+name = "gatestack-core"
+version = "0.1.0"
+edition = "2021"
+description = "GateStack - An 8-bit computer simulator core"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+# cdylib = compiles to .wasm for the browser
+# rlib  = normal Rust library for unit tests
+
+[dependencies]
+wasm-bindgen = "0.2"        # Rust <-> JavaScript bridge
+serde = { version = "1", features = ["derive"] }  # Serialize structs to JSON
+serde_json = "1"            # JSON serialization
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"   # Test in browser/Node
+
+[profile.release]
+opt-level = 3               # Maximum optimization
+lto = true                  # Link-time optimization for smaller .wasm

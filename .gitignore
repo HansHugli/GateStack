@@ -1,0 +1,20 @@
+# Rust
+/core/target/
+/core/Cargo.lock
+
+# WASM build output (generated, don't commit)
+/web/src/wasm/
+
+# Node
+/web/node_modules/
+/web/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
