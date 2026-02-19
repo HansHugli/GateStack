@@ -12,6 +12,7 @@ export default function MemoryView({ memory, currentAddress }: Props) {
 
   for (let addr = 0; addr < 256; addr += 8) {
     const cells = memory.slice(addr, addr + 8);
+    const hasAscii = cells.some(v => v >= 32 && v < 127);
     rows.push(
       <div key={addr} style={{ display: 'flex', alignItems: 'center', height: '22px', fontSize: '0.72rem' }}>
         {/* Address */}
@@ -28,11 +29,12 @@ export default function MemoryView({ memory, currentAddress }: Props) {
             const cellAddr = addr + i;
             const isPC = cellAddr === currentAddress;
             const isNonZero = val !== 0;
+            const ascii = (val >= 32 && val < 127) ? `'${String.fromCharCode(val)}'` : '';
 
             return (
               <span
                 key={i}
-                title={`[0x${hex(cellAddr)}] = ${val} (0b${val.toString(2).padStart(8, '0')})`}
+                title={`Addr: 0x${hex(cellAddr)} (${cellAddr})\nHex: 0x${hex(val)}\nDec: ${val}\nBin: ${val.toString(2).padStart(8, '0')}${ascii ? `\nASCII: ${ascii}` : ''}`}
                 style={{
                   fontFamily: "'Cascadia Code', 'Fira Code', monospace",
                   padding: '1px 3px',
@@ -52,10 +54,13 @@ export default function MemoryView({ memory, currentAddress }: Props) {
           })}
         </div>
 
-        {/* ASCII */}
+        {/* ASCII — highlight rows that contain printable text */}
         <span style={{
-          marginLeft: '6px', color: '#334155', fontFamily: 'monospace', fontSize: '0.68rem',
+          marginLeft: '6px',
+          color: hasAscii ? '#4ade80' : '#334155',
+          fontFamily: 'monospace', fontSize: '0.72rem',
           flexShrink: 0, whiteSpace: 'nowrap',
+          fontWeight: hasAscii ? 600 : 400,
         }}>
           {cells.map(v => (v >= 32 && v < 127) ? String.fromCharCode(v) : '.').join('')}
         </span>

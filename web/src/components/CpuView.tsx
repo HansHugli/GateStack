@@ -1,5 +1,5 @@
 import React from 'react';
-import { CpuState, CycleTrace } from '../wasm-bridge';
+import { CpuState, CycleTrace, MicroStep } from '../wasm-bridge';
 
 const hex = (n: number) => '0x' + n.toString(16).padStart(2, '0').toUpperCase();
 const bin = (n: number) => n.toString(2).padStart(8, '0');
@@ -33,8 +33,8 @@ export default function CpuView({ state, trace }: Props) {
   });
 
   // Determine which register was last written (from trace)
-  const activeReg = trace?.steps?.findLast(s =>
-    s.BusTransfer?.dest?.startsWith('R')
+  const activeReg = [...(trace?.steps ?? [])].reverse().find(
+    (s: MicroStep) => s.BusTransfer?.dest?.startsWith('R')
   )?.BusTransfer?.dest;
 
   return (

@@ -39,6 +39,43 @@ npm run dev
 
 The app runs with a built-in mock computer that simulates the CPU in TypeScript. Once you're ready to switch to the real WASM core, follow the full setup below.
 
+## Desktop App (Electron)
+
+### Development Mode
+Run Vite dev server + Electron window together:
+```bash
+cd web
+npm install
+npm run electron:dev
+```
+Or use the script: `scripts\electron-dev.bat`
+
+### Build Windows Installer
+```bash
+cd web
+npm run build              # Build Vite production bundle
+npm run electron:build:win # Package with electron-builder
+```
+Or use the script: `scripts\build.bat`
+
+The installer (.exe) will be in `web/release/`.
+
+### Build for Other Platforms
+```bash
+npm run electron:build:mac    # macOS .dmg
+npm run electron:build:linux  # Linux AppImage
+```
+
+### Menu Shortcuts (Electron)
+| Action | Shortcut |
+|--------|----------|
+| Step | F10 |
+| Run | F5 |
+| Pause | F6 |
+| Reset | Ctrl+Shift+R |
+| DevTools | Ctrl+Shift+I |
+| Zoom In/Out | Ctrl+ / Ctrl- |
+
 ## Full Setup (with Rust/WASM)
 
 ### Prerequisites

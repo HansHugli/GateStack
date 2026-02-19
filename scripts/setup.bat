@@ -1,59 +1,53 @@
 @echo off
 echo ============================================
-echo   GateStack Setup Script (Windows)
+echo   GateStack Setup
 echo ============================================
 echo.
 
-:: Check for Rust
-where rustc >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo [1/4] Rust not found. Installing via rustup...
-    echo       Download and run: https://win.rustup.rs
-    echo       Then re-run this script.
-    echo.
-    start https://win.rustup.rs
+cd /d "%~dp0..\web"
+
+:: Check for Node.js
+where node >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Node.js is not installed.
+    echo Download from: https://nodejs.org/
     pause
     exit /b 1
-) else (
-    echo [1/4] Rust found:
-    rustc --version
 )
 
-:: Install wasm-pack
-where wasm-pack >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo [2/4] Installing wasm-pack...
-    cargo install wasm-pack
-) else (
-    echo [2/4] wasm-pack found:
-    wasm-pack --version
-)
-
-:: Add wasm32 target
-echo [3/4] Adding wasm32 target...
-rustup target add wasm32-unknown-unknown
-
-:: Install npm dependencies
-echo [4/4] Installing web dependencies...
-cd web
+echo [1/2] Installing Node dependencies...
 call npm install
-cd ..
+if %errorlevel% neq 0 (
+    echo [ERROR] npm install failed.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [2/2] Checking for Rust (optional, for WASM core)...
+where rustc >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [INFO] Rust not found. WASM core will not be built.
+    echo [INFO] The app runs fine without it (uses JavaScript mock).
+    echo [INFO] To install Rust later: https://rustup.rs/
+) else (
+    echo [OK] Rust found: 
+    rustc --version
+    where wasm-pack >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [INFO] Installing wasm-pack...
+        cargo install wasm-pack
+    )
+    rustup target add wasm32-unknown-unknown 2>nul
+)
 
 echo.
 echo ============================================
-echo   Setup complete! Next steps:
-echo ============================================
+echo   Setup complete!
 echo.
-echo   1. Build the WASM core:
-echo      cd core
-echo      wasm-pack build --target web --out-dir ../web/src/wasm
-echo.
-echo   2. Start the dev server:
-echo      cd web
-echo      npm run dev
-echo.
-echo   3. Open http://localhost:3000
-echo.
-echo   Or just run: dev.bat
+echo   Quick start:
+echo     scripts\dev.bat          - Browser dev mode
+echo     scripts\electron-dev.bat - Electron dev mode  
+echo     scripts\build.bat        - Build installer
 echo ============================================
 pause

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { CpuState, CycleTrace } from '../wasm-bridge';
 
 interface Props {
@@ -8,107 +8,228 @@ interface Props {
 
 const hex = (n: number) => '0x' + n.toString(16).padStart(2, '0').toUpperCase();
 
+const ANIM_STYLES = `
+  @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+  @keyframes flowDown { 0% { stroke-dashoffset: 16; } 100% { stroke-dashoffset: 0; } }
+  @keyframes flowUp { 0% { stroke-dashoffset: -16; } 100% { stroke-dashoffset: 0; } }
+  @keyframes fadeGlow { 0% { filter: drop-shadow(0 0 3px currentColor); } 100% { filter: drop-shadow(0 0 0px transparent); } }
+`;
+
+// Full descriptions for each component
+const TOOLTIPS: Record<string, { full: string; desc: string }> = {
+  'IAR': { full: 'Instruction Address Register', desc: 'Holds the address of the next instruction (Program Counter)' },
+  'IR':  { full: 'Instruction Register', desc: 'Holds the instruction currently being decoded and executed' },
+  'R0':  { full: 'General Purpose Register 0', desc: 'Can store any 8-bit value (0–255) for computation' },
+  'R1':  { full: 'General Purpose Register 1', desc: 'Can store any 8-bit value (0–255) for computation' },
+  'R2':  { full: 'General Purpose Register 2', desc: 'Can store any 8-bit value (0–255) for computation' },
+  'R3':  { full: 'General Purpose Register 3', desc: 'Can store any 8-bit value (0–255) for computation' },
+  'MAR': { full: 'Memory Address Register', desc: 'Selects which of the 256 RAM cells to read or write' },
+  'ALU': { full: 'Arithmetic Logic Unit', desc: 'Performs ADD, AND, OR, XOR, NOT, SHL, SHR, CMP operations' },
+  'ACC': { full: 'Accumulator', desc: 'Stores the result of the last ALU operation' },
+  'TMP': { full: 'Temporary Register', desc: 'Internal register holding the second ALU operand' },
+  'RAM': { full: 'Random Access Memory', desc: '256 bytes of storage for programs and data' },
+};
+
+interface TooltipState {
+  visible: boolean;
+  x: number;
+  y: number;
+  id: string;
+}
+
 export default function BusView({ state, trace }: Props) {
+  const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, id: '' });
+
+  const handleMouseEnter = useCallback((e: React.MouseEvent, id: string) => {
+    const rect = (e.currentTarget as SVGElement).closest('svg')?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setTooltip({ visible: true, x, y, id });
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const rect = (e.currentTarget as SVGElement).closest('svg')?.getBoundingClientRect();
+    if (!rect) return;
+    setTooltip(prev => ({ ...prev, x: e.clientX - rect.left, y: e.clientY - rect.top }));
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setTooltip(prev => ({ ...prev, visible: false }));
+  }, []);
+
   if (!state) return null;
 
-  // Component positions for the bus diagram
   const components = [
-    { id: 'IAR', x: 30, y: 20, color: '#f59e0b', value: state.iar },
-    { id: 'IR', x: 130, y: 20, color: '#f59e0b', value: state.ir },
-    { id: 'R0', x: 230, y: 20, color: '#3b82f6', value: state.r[0] },
-    { id: 'R1', x: 310, y: 20, color: '#3b82f6', value: state.r[1] },
-    { id: 'R2', x: 390, y: 20, color: '#3b82f6', value: state.r[2] },
-    { id: 'R3', x: 470, y: 20, color: '#3b82f6', value: state.r[3] },
-    { id: 'ALU', x: 90, y: 110, color: '#a855f7', value: state.acc },
-    { id: 'ACC', x: 210, y: 110, color: '#14b8a6', value: state.acc },
-    { id: 'TMP', x: 310, y: 110, color: '#64748b', value: state.tmp },
-    { id: 'RAM', x: 430, y: 110, color: '#ef4444', value: 0 },
+    { id: 'IAR', x: 20, y: 18, color: '#f59e0b', value: state.iar },
+    { id: 'IR',  x: 95, y: 18, color: '#f59e0b', value: state.ir },
+    { id: 'R0',  x: 175, y: 18, color: '#3b82f6', value: state.r[0] },
+    { id: 'R1',  x: 245, y: 18, color: '#3b82f6', value: state.r[1] },
+    { id: 'R2',  x: 315, y: 18, color: '#3b82f6', value: state.r[2] },
+    { id: 'R3',  x: 385, y: 18, color: '#3b82f6', value: state.r[3] },
+    { id: 'MAR', x: 455, y: 18, color: '#ef4444', value: state.iar },
+    { id: 'ALU', x: 60,  y: 115, color: '#a855f7', value: state.acc },
+    { id: 'ACC', x: 160, y: 115, color: '#14b8a6', value: state.acc },
+    { id: 'TMP', x: 260, y: 115, color: '#64748b', value: state.tmp },
+    { id: 'RAM', x: 385, y: 115, color: '#ef4444', value: 0 },
   ];
 
-  // Determine active bus transfers from trace
-  const activeTransfers = trace?.steps
-    ?.filter(s => s.BusTransfer)
-    ?.map(s => s.BusTransfer!) ?? [];
+  const activeTransfers = useMemo(() => {
+    return trace?.steps?.filter(s => s.BusTransfer)?.map(s => s.BusTransfer!) ?? [];
+  }, [trace]);
+
+  const isSource = (id: string) => activeTransfers.some(t => {
+    const src = typeof t.source === 'string' ? t.source : ('Reg' in t.source ? t.source.Reg : '');
+    return src === id;
+  });
+  const isDest = (id: string) => activeTransfers.some(t => t.dest === id);
+
+  // Convert SVG viewBox coords to percentage for tooltip positioning
+  const tipInfo = TOOLTIPS[tooltip.id];
 
   return (
-    <div style={{ padding: '12px', borderBottom: '1px solid #1e293b', minHeight: '180px' }}>
-      <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#ef4444', marginBottom: '8px' }}>
-        🔌 Data Bus
+    <div style={{ padding: '12px', borderBottom: '1px solid #1e293b', minHeight: '190px', position: 'relative' }}>
+      <style>{ANIM_STYLES}</style>
+      <div style={{
+        fontSize: '0.8rem', fontWeight: 700, color: '#ef4444', marginBottom: '6px',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      }}>
+        <span>🔌 Data Bus</span>
         {trace?.opcode && (
-          <span style={{ fontWeight: 400, color: '#64748b', marginLeft: '8px', fontSize: '0.72rem' }}>
-            Executing: <span style={{ color: '#a78bfa' }}>{trace.opcode} {trace.reg_a},{trace.reg_b}</span>
+          <span style={{ fontWeight: 400, fontSize: '0.72rem' }}>
+            <span style={{ color: '#a78bfa', fontWeight: 600 }}>{trace.opcode}</span>
+            <span style={{ color: '#64748b' }}> {trace.reg_a},{trace.reg_b}</span>
+            <span style={{ color: '#475569' }}> @ 0x{trace.address.toString(16).padStart(2, '0').toUpperCase()}</span>
           </span>
         )}
       </div>
 
-      <svg viewBox="0 0 540 150" style={{ width: '100%', maxHeight: '150px' }}>
-        {/* Main bus line */}
-        <line x1="10" y1="70" x2="530" y2="70"
-          stroke="#ef4444" strokeWidth="3" opacity="0.3" />
-        <text x="265" y="66" textAnchor="middle" fill="#ef4444" fontSize="8" opacity="0.6">
-          ═══ 8-BIT BUS ═══ {hex(state.bus)}
-        </text>
+      <div style={{ position: 'relative' }}>
+        <svg viewBox="0 0 510 155" style={{ width: '100%', maxHeight: '155px' }}>
+          {/* Main bus line */}
+          <rect x="8" y="66" width="494" height="8" rx="4"
+            fill="#1e293b" stroke="#334155" strokeWidth="0.5" />
+          {activeTransfers.length > 0 && (
+            <rect x="8" y="66" width="494" height="8" rx="4"
+              fill="#ef4444" opacity="0.15"
+              style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
+          )}
+          <text x="255" y="64" textAnchor="middle" fill="#475569" fontSize="7">
+            BUS {hex(state.bus)} ({state.bus})
+          </text>
 
-        {/* Component boxes with bus connections */}
-        {components.map(comp => {
-          // Check if this component is active in current trace
-          const isSource = activeTransfers.some(t => {
-            const src = typeof t.source === 'string' ? t.source : '';
-            return src === comp.id || (typeof t.source === 'object' && 'Reg' in t.source && t.source.Reg === comp.id);
-          });
-          const isDest = activeTransfers.some(t => t.dest === comp.id);
-          const isActive = isSource || isDest;
+          {/* Components */}
+          {components.map(comp => {
+            const src = isSource(comp.id);
+            const dst = isDest(comp.id);
+            const active = src || dst;
+            const isTop = comp.y < 60;
+            const cx = comp.x + 25;
+            const busY = 70;
 
-          return (
-            <g key={comp.id}>
-              {/* Connection to bus */}
-              <line
-                x1={comp.x + 25} y1={comp.y + 30}
-                x2={comp.x + 25} y2={70}
-                stroke={isActive ? comp.color : '#1e293b'}
-                strokeWidth={isActive ? 2 : 1}
-                opacity={isActive ? 1 : 0.4}
-              />
-
-              {/* Direction arrow */}
-              {isSource && (
-                <polygon
-                  points={`${comp.x + 22},${65} ${comp.x + 28},${65} ${comp.x + 25},${70}`}
-                  fill={comp.color}
+            return (
+              <g key={comp.id}>
+                {/* Connection line */}
+                <line
+                  x1={cx} y1={isTop ? comp.y + 32 : comp.y - 2}
+                  x2={cx} y2={busY}
+                  stroke={active ? comp.color : '#1e293b'}
+                  strokeWidth={active ? 2.5 : 1}
+                  strokeDasharray={active ? '4 4' : 'none'}
+                  opacity={active ? 1 : 0.3}
+                  style={active ? {
+                    animation: `${src && isTop ? 'flowDown' : 'flowUp'} 0.4s linear infinite`,
+                  } : undefined}
                 />
-              )}
-              {isDest && (
-                <polygon
-                  points={`${comp.x + 22},${comp.y + 32} ${comp.x + 28},${comp.y + 32} ${comp.x + 25},${comp.y + 27}`}
-                  fill={comp.color}
-                />
-              )}
 
-              {/* Component box */}
-              <rect
-                x={comp.x} y={comp.y} width="50" height="30" rx="4"
-                fill={isActive ? comp.color + '33' : '#1e293b'}
-                stroke={isActive ? comp.color : '#334155'}
-                strokeWidth={isActive ? 2 : 1}
-              />
-              <text
-                x={comp.x + 25} y={comp.y + 14}
-                textAnchor="middle" fill={isActive ? '#fff' : '#94a3b8'}
-                fontSize="10" fontWeight="bold"
-              >
-                {comp.id}
-              </text>
-              <text
-                x={comp.x + 25} y={comp.y + 25}
-                textAnchor="middle" fill={isActive ? '#fff' : '#475569'}
-                fontSize="8" fontFamily="monospace"
-              >
-                {hex(comp.value)}
-              </text>
+                {src && (
+                  <circle cx={cx} cy={busY} r="3" fill={comp.color}
+                    style={{ animation: 'pulse 0.6s ease-in-out infinite' }} />
+                )}
+                {dst && (
+                  <circle cx={cx} cy={isTop ? comp.y + 32 : comp.y - 2} r="3" fill={comp.color}
+                    style={{ animation: 'pulse 0.6s ease-in-out infinite' }} />
+                )}
+
+                {/* Visible component box */}
+                <rect
+                  x={comp.x} y={comp.y} width="50" height="30" rx="5"
+                  fill={active ? comp.color + '25' : '#111827'}
+                  stroke={active ? comp.color : '#1e293b'}
+                  strokeWidth={active ? 2 : 1}
+                  style={active ? { animation: 'fadeGlow 0.8s ease-in-out' } : undefined}
+                />
+
+                {/* Invisible expanded hit area for tooltip — 6px padding around box */}
+                <rect
+                  x={comp.x - 6} y={comp.y - 6} width={62} height={42} rx="8"
+                  fill="transparent"
+                  style={{ cursor: 'help' }}
+                  onMouseEnter={(e) => handleMouseEnter(e, comp.id)}
+                  onMouseMove={handleMouseMove}
+                  onMouseLeave={handleMouseLeave}
+                />
+
+                {/* Label */}
+                <text x={cx} y={comp.y + 13} textAnchor="middle"
+                  fill={active ? '#fff' : '#64748b'}
+                  fontSize="9" fontWeight="bold" pointerEvents="none">
+                  {comp.id}
+                </text>
+
+                {/* Value */}
+                <text x={cx} y={comp.y + 24} textAnchor="middle"
+                  fill={active ? comp.color : '#334155'}
+                  fontSize="7" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
+                  {hex(comp.value)} ({comp.value})
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Data flow label */}
+          {activeTransfers.length > 0 && (
+            <g>
+              {activeTransfers.slice(-1).map((t, i) => {
+                const srcName = typeof t.source === 'string' ? t.source
+                  : 'Reg' in t.source ? t.source.Reg
+                  : 'Immediate' in t.source ? `#${t.source.Immediate}` : '?';
+                return (
+                  <text key={i} x="255" y="148" textAnchor="middle"
+                    fill="#94a3b8" fontSize="9" fontFamily="monospace">
+                    {srcName} → {t.dest} [{hex(t.value)} = {t.value}]
+                  </text>
+                );
+              })}
             </g>
-          );
-        })}
-      </svg>
+          )}
+        </svg>
+
+        {/* Custom HTML tooltip — positioned below cursor */}
+        {tooltip.visible && tipInfo && (
+          <div style={{
+            position: 'absolute',
+            left: `${tooltip.x}px`,
+            top: `${tooltip.y + 22}px`,
+            transform: 'translateX(-50%)',
+            background: '#1e293b',
+            border: '1px solid #475569',
+            borderRadius: '8px',
+            padding: '8px 12px',
+            zIndex: 100,
+            pointerEvents: 'none',
+            maxWidth: '220px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+          }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#e2e8f0', marginBottom: '3px' }}>
+              {tooltip.id} — {tipInfo.full}
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#94a3b8', lineHeight: 1.4 }}>
+              {tipInfo.desc}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

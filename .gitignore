@@ -1,13 +1,11 @@
 # Rust
-/core/target/
-/core/Cargo.lock
-
-# WASM build output (generated, don't commit)
-/web/src/wasm/
+core/target/
 
 # Node
-/web/node_modules/
-/web/dist/
+web/node_modules/
+web/dist/
+web/release/
+web/src/wasm/
 
 # IDE
 .vscode/
@@ -18,3 +16,8 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Electron
+*.dmg
+*.AppImage
+*.snap
