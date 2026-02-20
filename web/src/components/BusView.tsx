@@ -6,7 +6,7 @@ interface Props {
   trace: CycleTrace | null;
 }
 
-const hex = (n: number) => '0x' + n.toString(16).padStart(2, '0').toUpperCase();
+const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0').toUpperCase();
 
 const ANIM_STYLES = `
   @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
@@ -19,15 +19,13 @@ const ANIM_STYLES = `
 const TOOLTIPS: Record<string, { full: string; desc: string }> = {
   'IAR': { full: 'Instruction Address Register', desc: 'Holds the address of the next instruction (Program Counter)' },
   'IR':  { full: 'Instruction Register', desc: 'Holds the instruction currently being decoded and executed' },
-  'R0':  { full: 'General Purpose Register 0', desc: 'Can store any 8-bit value (0–255) for computation' },
-  'R1':  { full: 'General Purpose Register 1', desc: 'Can store any 8-bit value (0–255) for computation' },
-  'R2':  { full: 'General Purpose Register 2', desc: 'Can store any 8-bit value (0–255) for computation' },
-  'R3':  { full: 'General Purpose Register 3', desc: 'Can store any 8-bit value (0–255) for computation' },
+  'REGS': { full: 'Register File (R0–R15)', desc: '16 general-purpose 16-bit registers' },
   'MAR': { full: 'Memory Address Register', desc: 'Selects which of the 256 RAM cells to read or write' },
   'ALU': { full: 'Arithmetic Logic Unit', desc: 'Performs ADD, AND, OR, XOR, NOT, SHL, SHR, CMP operations' },
   'ACC': { full: 'Accumulator', desc: 'Stores the result of the last ALU operation' },
   'TMP': { full: 'Temporary Register', desc: 'Internal register holding the second ALU operand' },
-  'RAM': { full: 'Random Access Memory', desc: '256 bytes of storage for programs and data' },
+  'RAM': { full: 'Random Access Memory', desc: '64KB of storage for programs and data' },
+  'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x9FFF, grows downward' },
 };
 
 interface TooltipState {
@@ -63,15 +61,13 @@ export default function BusView({ state, trace }: Props) {
   const components = [
     { id: 'IAR', x: 20, y: 15, color: '#f59e0b', value: state.iar },
     { id: 'IR',  x: 95, y: 15, color: '#f59e0b', value: state.ir },
-    { id: 'R0',  x: 175, y: 15, color: '#3b82f6', value: state.r[0] },
-    { id: 'R1',  x: 245, y: 15, color: '#3b82f6', value: state.r[1] },
-    { id: 'R2',  x: 315, y: 15, color: '#3b82f6', value: state.r[2] },
-    { id: 'R3',  x: 385, y: 15, color: '#3b82f6', value: state.r[3] },
+    { id: 'REGS', x: 250, y: 15, color: '#3b82f6', value: 0 },
     { id: 'MAR', x: 455, y: 15, color: '#ef4444', value: state.iar },
     { id: 'ALU', x: 60,  y: 175, color: '#a855f7', value: state.acc },
     { id: 'ACC', x: 175, y: 175, color: '#14b8a6', value: state.acc },
     { id: 'TMP', x: 290, y: 175, color: '#64748b', value: state.tmp },
     { id: 'RAM', x: 420, y: 175, color: '#ef4444', value: 0 },
+    { id: 'SP',  x: 340, y: 15, color: '#22c55e', value: state.sp },
   ];
 
   const activeTransfers = useMemo(() => {

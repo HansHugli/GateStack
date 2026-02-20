@@ -1,57 +1,71 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 interface Props {
   memory: number[];
+  memoryVersion: number;
+  isRunning: boolean;
 }
 
-const GRID = 8;
-const PAGE0_ADDR = 192; // RAM 192–255
-const PAGE1_ADDR = 128; // RAM 128–191
-const PAGE_SELECT = 127; // RAM[127]: 0=page0, nonzero=page1
+const GRID = 32;
+const PIXELS = GRID * GRID;
+const BYTES_PER_FRAME = PIXELS / 4;  // 256 bytes, 2bpp packed
 
-export default function VideoView({ memory }: Props) {
-  const [autoAnimate, setAutoAnimate] = useState(false);
-  const [animPage, setAnimPage] = useState(0);
-  const intervalRef = useRef<number | null>(null);
+// Double buffer: page 0 at 0xA000, page 1 at 0xA100
+// PAGE_SELECT (0xDFFF) tells which page to DISPLAY
+const VIDEO_BASE = 0xA000;
+const PAGE_SELECT = 0xDFFF;
 
-  // Page from RAM[127] (program-controlled)
-  const ramPage = (memory[PAGE_SELECT] ?? 0) === 0 ? 0 : 1;
+const PALETTE = [
+  '#0a0c14',             // 0: off
+  'rgb(60, 57, 42)',     // 1: dim amber
+  'rgb(160, 152, 112)',  // 2: mid amber
+  'rgb(255, 242, 179)',  // 3: bright amber
+];
 
-  // When auto-animate is on, cycle pages at ~4 FPS
-  useEffect(() => {
-    if (autoAnimate) {
-      intervalRef.current = window.setInterval(() => {
-        setAnimPage(p => (p === 0 ? 1 : 0));
-      }, 250);
-    } else {
-      if (intervalRef.current !== null) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number | null>(null);
+
+  // Check which page to display from PAGE_SELECT register
+  const displayPage = (memory[PAGE_SELECT] ?? 0) & 1;
+  const displayBase = VIDEO_BASE + displayPage * BYTES_PER_FRAME;
+
+  // Check if video RAM has any content
+  const hasContent = memory.slice(VIDEO_BASE, VIDEO_BASE + BYTES_PER_FRAME * 2).some(v => v !== 0);
+
+  // Render function
+  const render = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const cellSize = 5;
+    canvas.width = GRID * cellSize;
+    canvas.height = GRID * cellSize;
+
+    for (let i = 0; i < PIXELS; i++) {
+      const byteIdx = Math.floor(i / 4);
+      const bitShift = (3 - (i % 4)) * 2;
+      const byteVal = memory[displayBase + byteIdx] ?? 0;
+      const color = (byteVal >> bitShift) & 0x03;
+      const row = Math.floor(i / GRID);
+      const col = i % GRID;
+      ctx.fillStyle = PALETTE[color];
+      ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
     }
-    return () => {
-      if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    };
-  }, [autoAnimate]);
+  };
 
-  // Active page: auto-animate overrides RAM page select
-  const activePage = autoAnimate ? animPage : ramPage;
-  const baseAddr = activePage === 0 ? PAGE0_ADDR : PAGE1_ADDR;
-
-  const cellSize = 18;
-  const gap = 1;
-
-  // Check if either page has any nonzero pixels
-  const page0HasContent = memory.slice(PAGE0_ADDR, PAGE0_ADDR + 64).some(v => v !== 0);
-  const page1HasContent = memory.slice(PAGE1_ADDR, PAGE1_ADDR + 64).some(v => v !== 0);
-  const hasAnyContent = page0HasContent || page1HasContent;
+  // Render on memory change (triggered by version bump)
+  useEffect(() => {
+    render();
+  }, [memoryVersion]);
 
   return (
     <div style={{
       padding: '10px 12px', flexShrink: 0,
       borderTop: '1px solid var(--border-subtle)',
     }}>
-      {/* Header */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 6,
@@ -67,89 +81,42 @@ export default function VideoView({ memory }: Props) {
             fontSize: '0.58rem', color: 'var(--text-dim)', fontWeight: 400,
             fontFamily: 'var(--font-mono)',
           }}>
-            8×8 · P{activePage}
+            32×32 · 2bpp{isRunning ? ' · live' : ''}
           </span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {/* Page indicator chips */}
-          {[0, 1].map(p => (
-            <span key={p} style={{
-              fontSize: '0.55rem', fontWeight: 600,
-              padding: '1px 5px', borderRadius: 3,
-              background: activePage === p ? 'rgba(168,85,247,0.15)' : 'transparent',
-              color: activePage === p ? '#a855f7' : 'var(--text-dim)',
-              border: `1px solid ${activePage === p ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
-              fontFamily: 'var(--font-mono)',
-            }}>
-              P{p}:{p === 0 ? '192' : '128'}
-            </span>
-          ))}
-
-          {/* Auto-animate toggle */}
-          <button
-            onClick={() => setAutoAnimate(!autoAnimate)}
-            style={{
-              fontSize: '0.55rem', fontWeight: 600,
-              padding: '1px 6px', borderRadius: 3, cursor: 'pointer',
-              marginLeft: 4,
-              background: autoAnimate ? 'rgba(168,85,247,0.15)' : 'transparent',
-              color: autoAnimate ? '#a855f7' : 'var(--text-dim)',
-              border: `1px solid ${autoAnimate ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
-              transition: 'all 0.2s',
-            }}
-            title={autoAnimate ? 'Stop auto-animate' : 'Auto-animate between pages'}
-          >
-            {autoAnimate ? '⏸' : '▶'} Anim
-          </button>
-        </div>
+        {isRunning && hasContent && (
+          <span style={{
+            fontSize: '0.52rem', padding: '1px 5px', borderRadius: 3,
+            background: 'rgba(168,85,247,0.15)', color: '#a855f7',
+            border: '1px solid rgba(168,85,247,0.4)',
+            fontWeight: 600,
+          }}>
+            ● LIVE
+          </span>
+        )}
       </div>
 
-      {/* Pixel grid */}
       <div style={{ display: 'flex', justifyContent: 'center' }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${GRID}, ${cellSize}px)`,
-          gridTemplateRows: `repeat(${GRID}, ${cellSize}px)`,
-          gap: `${gap}px`,
-          padding: gap,
-          background: 'var(--bg-base, #06080f)',
-          border: `1px solid ${autoAnimate ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
-          borderRadius: 'var(--radius-sm)',
-          transition: 'border-color 0.2s',
-        }}>
-          {Array.from({ length: GRID * GRID }, (_, i) => {
-            const addr = baseAddr + i;
-            const val = memory[addr] ?? 0;
-            const on = val !== 0;
-            const brightness = on ? Math.min(255, Math.max(40, val)) : 0;
-            return (
-              <div
-                key={i}
-                title={`P${activePage}[${addr}] = 0x${val.toString(16).padStart(2, '0')} (${val})`}
-                style={{
-                  width: cellSize, height: cellSize,
-                  background: on
-                    ? `rgb(${brightness}, ${Math.floor(brightness * 0.95)}, ${Math.floor(brightness * 0.7)})`
-                    : '#0a0c14',
-                  borderRadius: 1,
-                  transition: 'background 0.05s',
-                }}
-              />
-            );
-          })}
-        </div>
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: 160, height: 160,
+            border: `1px solid ${isRunning && hasContent ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
+            borderRadius: 'var(--radius-sm)',
+            imageRendering: 'pixelated',
+            transition: 'border-color 0.2s',
+          }}
+        />
       </div>
 
-      {/* Page status */}
-      {hasAnyContent && (
+      {hasContent && (
         <div style={{
-          fontSize: '0.55rem', color: 'var(--text-dim)',
+          fontSize: '0.52rem', color: 'var(--text-dim)',
           textAlign: 'center', marginTop: 4,
           fontFamily: 'var(--font-mono)',
         }}>
-          RAM[{PAGE_SELECT}]={memory[PAGE_SELECT] ?? 0} → Page {ramPage}
-          {autoAnimate && ' (anim override)'}
+          Video RAM @ 0x{displayBase.toString(16).toUpperCase()} · Page {displayPage}
         </div>
       )}
     </div>

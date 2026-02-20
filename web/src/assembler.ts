@@ -1,421 +1,275 @@
 // ============================================================================
-// assembler.ts — GateStack Two-Pass Assembler
+// assembler.ts — Two-pass assembler for GateStack 16-bit ISA
 // ============================================================================
-// Converts assembly text → byte array.
-// Supports labels (e.g. "loop:"), all 16 opcodes, comments, and DATA with
-// character literals ('A').
+// Encoding:
+//   ALU ops:   [opcode:8] [rA:4 | rB:4]               = 2 bytes
+//   PUSH/POP:  [opcode:8] [rA:4 | 0:4]                = 2 bytes
+//   OUT/IN:    [opcode:8] [rA:4 | 0:4]                = 2 bytes
+//   JMPR:      [opcode:8] [rA:4 | 0:4]                = 2 bytes
+//   RET/HALT:  [opcode:8] [0x00]                       = 2 bytes
+//   JMP/JC/JA/JE/CALL: [opcode:8] [addr_lo:8] [addr_hi:8] = 3 bytes
+//   LOAD/STORE: [opcode:8] [rA:4 | 0:4] [addr_lo:8] [addr_hi:8] = 4 bytes
+//   DATA:      [opcode:8] [rA:4 | 0:4] [imm_lo:8] [imm_hi:8]   = 4 bytes
+//   DB:        [byte:8]                                 = 1 byte
+//   DW:        [lo:8] [hi:8]                            = 2 bytes
 // ============================================================================
 
-export interface AssemblyError {
-  line: number;      // 1-indexed line number
-  column?: number;
-  message: string;
-}
+import { OP, instrSize } from './wasm-bridge';
 
 export interface AssemblyResult {
   success: boolean;
   bytes: number[];
-  errors: AssemblyError[];
-  /** Map from byte address → source line number (1-indexed) */
-  addressToLine: Map<number, number>;
-  /** Map from label name → byte address */
-  labels: Map<string, number>;
-  /** Total bytes emitted */
-  size: number;
+  errors: Array<{ line: number; message: string }>;
+  addressMap: Map<number, number>;    // line → address
+  addressToLine: Map<number, number>; // address → line (for CodeEditor)
+  labelMap: Map<string, number>;      // label → address
+  labels: Map<string, number>;        // alias for CodeEditor
+  size: number;                       // byte count
 }
 
-// ── Instruction Definitions ─────────────────────────────────────────────
-
-interface InstrDef {
-  opcode: number;
-  type: 'alu' | 'data' | 'load' | 'store' | 'jmp_reg' | 'jmp_addr' | 'jmp_cond' | 'halt' | 'out' | 'in';
+interface ParsedLine {
+  lineNum: number;
+  label?: string;
+  mnemonic?: string;
+  args: string[];
+  raw: string;
 }
 
-const INSTRUCTIONS: Record<string, InstrDef> = {
-  'ADD':   { opcode: 0x0, type: 'alu' },
-  'SHR':   { opcode: 0x1, type: 'alu' },
-  'SHL':   { opcode: 0x2, type: 'alu' },
-  'NOT':   { opcode: 0x3, type: 'alu' },
-  'AND':   { opcode: 0x4, type: 'alu' },
-  'OR':    { opcode: 0x5, type: 'alu' },
-  'XOR':   { opcode: 0x6, type: 'alu' },
-  'CMP':   { opcode: 0x7, type: 'alu' },
-  'LOAD':  { opcode: 0x8, type: 'load' },
-  'STORE': { opcode: 0x9, type: 'store' },
-  'DATA':  { opcode: 0xA, type: 'data' },
-  'JMPR':  { opcode: 0xB, type: 'jmp_reg' },
-  'OUT':   { opcode: 0xB, type: 'out' },
-  'IN':    { opcode: 0xB, type: 'in' },
-  'JMP':   { opcode: 0xC, type: 'jmp_addr' },
-  'JC':    { opcode: 0xD, type: 'jmp_cond' },
-  'JA':    { opcode: 0xE, type: 'jmp_cond' },
-  'JE':    { opcode: 0xF, type: 'jmp_cond' },
-  'HALT':  { opcode: -1,  type: 'halt' },
+const REGISTERS: Record<string, number> = {
+  R0: 0, R1: 1, R2: 2, R3: 3, R4: 4, R5: 5, R6: 6, R7: 7,
+  R8: 8, R9: 9, R10: 10, R11: 11, R12: 12, R13: 13, R14: 14, R15: 15,
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────────
+const MNEMONICS: Record<string, { opcode: number; type: string }> = {
+  HALT:  { opcode: OP.HALT,  type: 'none' },
+  ADD:   { opcode: OP.ADD,   type: 'alu' },
+  SUB:   { opcode: OP.SUB,   type: 'alu' },
+  MUL:   { opcode: OP.MUL,   type: 'alu' },
+  DIV:   { opcode: OP.DIV,   type: 'alu' },
+  MOD:   { opcode: OP.MOD,   type: 'alu' },
+  SHR:   { opcode: OP.SHR,   type: 'alu' },
+  SHL:   { opcode: OP.SHL,   type: 'alu' },
+  NOT:   { opcode: OP.NOT,   type: 'alu' },
+  AND:   { opcode: OP.AND,   type: 'alu' },
+  OR:    { opcode: OP.OR,    type: 'alu' },
+  XOR:   { opcode: OP.XOR,   type: 'alu' },
+  CMP:   { opcode: OP.CMP,   type: 'alu' },
+  LOAD:  { opcode: OP.LOAD,  type: 'mem' },
+  STORE: { opcode: OP.STORE, type: 'mem' },
+  DATA:  { opcode: OP.DATA,  type: 'imm' },
+  PUSH:  { opcode: OP.PUSH,  type: 'reg1' },
+  POP:   { opcode: OP.POP,   type: 'reg1' },
+  LDRI:  { opcode: OP.LDRI,  type: 'alu' },
+  STRI:  { opcode: OP.STRI,  type: 'alu' },
+  JMP:   { opcode: OP.JMP,   type: 'jump' },
+  JC:    { opcode: OP.JC,    type: 'jump' },
+  JA:    { opcode: OP.JA,    type: 'jump' },
+  JE:    { opcode: OP.JE,    type: 'jump' },
+  JMPR:  { opcode: OP.JMPR,  type: 'reg1' },
+  CALL:  { opcode: OP.CALL,  type: 'jump' },
+  RET:   { opcode: OP.RET,   type: 'none' },
+  OUT:   { opcode: OP.OUT,   type: 'reg1' },
+  IN:    { opcode: OP.IN,    type: 'reg1' },
+};
 
-function parseRegister(token: string): number | null {
-  const match = token.toUpperCase().match(/^R([0-3])$/);
-  return match ? parseInt(match[1]) : null;
+function parseNumber(s: string): number | null {
+  s = s.trim();
+  // Character literal: 'A' or 'A
+  if (s.startsWith("'") && s.length >= 2) {
+    return s.charCodeAt(1);
+  }
+  // Hex
+  if (s.startsWith('0x') || s.startsWith('0X')) {
+    const v = parseInt(s, 16);
+    return isNaN(v) ? null : v & 0xFFFF;
+  }
+  // Binary
+  if (s.startsWith('0b') || s.startsWith('0B')) {
+    const v = parseInt(s.slice(2), 2);
+    return isNaN(v) ? null : v & 0xFFFF;
+  }
+  // Decimal (possibly negative)
+  const v = parseInt(s, 10);
+  if (isNaN(v)) return null;
+  return v < 0 ? (v + 65536) & 0xFFFF : v & 0xFFFF;
 }
 
-function parseNumber(token: string): number | null {
-  const t = token.trim();
+function parseLine(raw: string, lineNum: number): ParsedLine {
+  // Strip comments
+  const commentIdx = raw.indexOf(';');
+  let code = commentIdx >= 0 ? raw.slice(0, commentIdx) : raw;
+  code = code.trim();
 
-  // Character literal: 'A' or 'a'
-  if (t.length === 3 && t.startsWith("'") && t.endsWith("'")) {
-    return t.charCodeAt(1);
+  const result: ParsedLine = { lineNum, args: [], raw };
+  if (!code) return result;
+
+  // Check for label: "name:"
+  const labelMatch = code.match(/^([a-zA-Z_]\w*):\s*(.*)/);
+  if (labelMatch) {
+    result.label = labelMatch[1];
+    code = labelMatch[2].trim();
+    if (!code) return result;
   }
 
-  // Hex: 0xFF or 0XFF
-  if (/^0[xX][0-9a-fA-F]+$/.test(t)) {
-    const val = parseInt(t, 16);
-    return val >= 0 && val <= 255 ? val : null;
+  // Split mnemonic and args
+  const parts = code.split(/[\s,]+/).filter(Boolean);
+  if (parts.length > 0) {
+    result.mnemonic = parts[0].toUpperCase();
+    result.args = parts.slice(1).map(a => a.trim());
   }
-
-  // Binary: 0b11001010
-  if (/^0[bB][01]+$/.test(t)) {
-    const val = parseInt(t.slice(2), 2);
-    return val >= 0 && val <= 255 ? val : null;
-  }
-
-  // Decimal
-  if (/^-?\d+$/.test(t)) {
-    let val = parseInt(t, 10);
-    // Allow negative for two's complement (-1 = 255)
-    if (val < 0) val = (val + 256) & 0xFF;
-    return val >= 0 && val <= 255 ? val : null;
-  }
-
-  return null;
+  return result;
 }
 
-/** Strip bracket notation: [200] → 200 */
-function stripBrackets(token: string): string {
-  const t = token.trim();
-  if (t.startsWith('[') && t.endsWith(']')) {
-    return t.slice(1, -1).trim();
+function instrSizeForType(type: string): number {
+  switch (type) {
+    case 'none':  return 2;
+    case 'alu':   return 2;
+    case 'reg1':  return 2;
+    case 'mem':   return 4;
+    case 'imm':   return 4;
+    case 'jump':  return 3;
+    case 'db':    return 1;
+    case 'dw':    return 2;
+    default:      return 2;
   }
-  return t;
 }
-
-// ── Assembler ───────────────────────────────────────────────────────────
 
 export function assemble(source: string): AssemblyResult {
-  const errors: AssemblyError[] = [];
-  const labels = new Map<string, number>();
-  const addressToLine = new Map<number, number>();
   const lines = source.split('\n');
+  const errors: Array<{ line: number; message: string }> = [];
+  const parsed: ParsedLine[] = lines.map((l, i) => parseLine(l, i + 1));
 
-  // ── PASS 1: Collect labels and calculate addresses ──────────────────
+  // ── Pass 1: Calculate addresses and collect labels ──────────────────
+  const labelMap = new Map<string, number>();
+  const addressMap = new Map<number, number>();
+  let pc = 0;
 
-  let addr = 0;
-
-  interface ParsedLine {
-    lineNum: number;       // 1-indexed
-    label?: string;
-    mnemonic?: string;
-    args: string[];
-    addr: number;          // byte address at start of this instruction
-  }
-
-  const parsed: ParsedLine[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const lineNum = i + 1;
-    let line = lines[i];
-
-    // Strip comments
-    const commentIdx = line.indexOf(';');
-    if (commentIdx >= 0) line = line.substring(0, commentIdx);
-    line = line.trim();
-
-    if (!line) continue;
-
-    let label: string | undefined;
-    let rest = line;
-
-    // Check for label: "name:" at the start
-    const labelMatch = rest.match(/^([a-zA-Z_]\w*)\s*:\s*(.*)/);
-    if (labelMatch) {
-      label = labelMatch[1].toLowerCase();
-      rest = labelMatch[2].trim();
-
-      if (labels.has(label)) {
-        errors.push({ line: lineNum, message: `Duplicate label: "${label}"` });
-      } else {
-        labels.set(label, addr);
+  for (const line of parsed) {
+    if (line.label) {
+      if (labelMap.has(line.label)) {
+        errors.push({ line: line.lineNum, message: `duplicate label '${line.label}'` });
       }
+      labelMap.set(line.label, pc);
     }
 
-    // If nothing left after label, it was just a label line
-    if (!rest) {
-      parsed.push({ lineNum, label, args: [], addr });
-      continue;
-    }
+    addressMap.set(line.lineNum, pc);
 
-    // Tokenize: split on whitespace and commas, respecting bracket groups
-    const tokens: string[] = [];
-    let current = '';
-    let inBracket = false;
-    for (const ch of rest) {
-      if (ch === '[') { inBracket = true; current += ch; }
-      else if (ch === ']') { inBracket = false; current += ch; }
-      else if (!inBracket && (ch === ' ' || ch === '\t' || ch === ',')) {
-        if (current.trim()) tokens.push(current.trim());
-        current = '';
-      } else {
-        current += ch;
+    if (!line.mnemonic) continue;
+
+    if (line.mnemonic === 'DB') {
+      pc += 1;
+    } else if (line.mnemonic === 'DW') {
+      pc += 2;
+    } else {
+      const info = MNEMONICS[line.mnemonic];
+      if (!info) {
+        errors.push({ line: line.lineNum, message: `unknown mnemonic '${line.mnemonic}'` });
+        continue;
       }
-    }
-    if (current.trim()) tokens.push(current.trim());
-
-    if (tokens.length === 0) {
-      parsed.push({ lineNum, label, args: [], addr });
-      continue;
-    }
-
-    const mnemonic = tokens[0].toUpperCase();
-    const args = tokens.slice(1);
-
-    const instrDef = INSTRUCTIONS[mnemonic];
-    if (!instrDef) {
-      errors.push({ line: lineNum, message: `Unknown instruction: "${mnemonic}"` });
-      parsed.push({ lineNum, label, mnemonic, args, addr });
-      addr += 1; // assume 1 byte to keep going
-      continue;
-    }
-
-    parsed.push({ lineNum, label, mnemonic, args, addr });
-    addressToLine.set(addr, lineNum);
-
-    // Calculate instruction size
-    switch (instrDef.type) {
-      case 'halt':
-        addr += 1;
-        break;
-      case 'alu':
-      case 'jmp_reg':
-      case 'out':
-      case 'in':
-        addr += 1;
-        break;
-      case 'data':
-      case 'load':
-      case 'store':
-      case 'jmp_addr':
-      case 'jmp_cond':
-        addr += 2;
-        break;
+      pc += instrSizeForType(info.type);
     }
   }
 
-  // If Pass 1 had errors, still try Pass 2 for more error info
-  if (addr > 256) {
-    errors.push({ line: 0, message: `Program too large: ${addr} bytes (max 256)` });
+  // Build reverse map: address → line
+  const addressToLine = new Map<number, number>();
+  addressMap.forEach((addr, lineNum) => addressToLine.set(addr, lineNum));
+
+  if (errors.length > 0) {
+    return { success: false, bytes: [], errors, addressMap, addressToLine, labelMap, labels: labelMap, size: 0 };
   }
 
-  // ── PASS 2: Emit bytes ─────────────────────────────────────────────
+  // ── Pass 2: Generate bytes ──────────────────────────────────────────
+  const output: number[] = [];
 
-  const bytes: number[] = [];
-
-  function encode(opcode: number, regA: number, regB: number): number {
-    return ((opcode & 0xF) << 4) | ((regA & 0x3) << 2) | (regB & 0x3);
-  }
-
-  function resolveOperand(token: string, lineNum: number): number | null {
-    // Try as label first
-    const labelName = token.toLowerCase();
-    if (labels.has(labelName)) {
-      return labels.get(labelName)!;
-    }
-
-    // Try as number (with bracket stripping for LOAD/STORE)
-    const stripped = stripBrackets(token);
-    const num = parseNumber(stripped);
-    if (num !== null) return num;
-
-    // Unknown label?
-    if (/^[a-zA-Z_]\w*$/.test(token)) {
-      errors.push({ line: lineNum, message: `Undefined label: "${token}"` });
+  function resolveValue(s: string, lineNum: number): number {
+    const upper = s.toUpperCase();
+    if (labelMap.has(s)) return labelMap.get(s)!;
+    if (labelMap.has(upper)) return labelMap.get(upper)!;
+    const num = parseNumber(s);
+    if (num === null) {
+      errors.push({ line: lineNum, message: `cannot resolve '${s}'` });
       return 0;
     }
-
-    errors.push({ line: lineNum, message: `Invalid operand: "${token}"` });
-    return null;
+    return num;
   }
 
-  for (const p of parsed) {
-    if (!p.mnemonic) continue;
+  function resolveReg(s: string, lineNum: number): number {
+    const r = REGISTERS[s.toUpperCase()];
+    if (r === undefined) {
+      errors.push({ line: lineNum, message: `invalid register '${s}', expected R0-R15` });
+      return 0;
+    }
+    return r;
+  }
 
-    const instrDef = INSTRUCTIONS[p.mnemonic];
-    if (!instrDef) continue; // already reported in pass 1
+  function emit16(val: number): void {
+    output.push(val & 0xFF);         // lo
+    output.push((val >> 8) & 0xFF);  // hi
+  }
 
-    switch (instrDef.type) {
-      case 'halt':
-        bytes.push(0x00);
+  for (const line of parsed) {
+    if (!line.mnemonic) continue;
+
+    // DB: raw byte
+    if (line.mnemonic === 'DB') {
+      const val = resolveValue(line.args[0] ?? '0', line.lineNum);
+      output.push(val & 0xFF);
+      continue;
+    }
+
+    // DW: raw 16-bit word
+    if (line.mnemonic === 'DW') {
+      const val = resolveValue(line.args[0] ?? '0', line.lineNum);
+      emit16(val);
+      continue;
+    }
+
+    const info = MNEMONICS[line.mnemonic];
+    if (!info) continue; // already errored in pass 1
+
+    switch (info.type) {
+      case 'none': // HALT, RET
+        output.push(info.opcode);
+        output.push(0x00);
         break;
 
-      case 'alu': {
-        // ALU ops: mnemonic RA, RB
-        // NOT only needs RA (regB is ignored but usually same as regA)
-        if (p.mnemonic === 'NOT') {
-          if (p.args.length < 1) {
-            errors.push({ line: p.lineNum, message: `${p.mnemonic} requires at least 1 register (e.g. NOT R0)` });
-            bytes.push(0x00);
-            break;
-          }
-          const rA = parseRegister(p.args[0]);
-          const rB = p.args.length > 1 ? parseRegister(p.args[1]) : rA;
-          if (rA === null) {
-            errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-            bytes.push(0x00);
-            break;
-          }
-          bytes.push(encode(instrDef.opcode, rA, rB ?? rA));
-        } else {
-          if (p.args.length < 2) {
-            errors.push({ line: p.lineNum, message: `${p.mnemonic} requires 2 registers (e.g. ${p.mnemonic} R0, R1)` });
-            bytes.push(0x00);
-            break;
-          }
-          const rA = parseRegister(p.args[0]);
-          const rB = parseRegister(p.args[1]);
-          if (rA === null) {
-            errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-            bytes.push(0x00);
-            break;
-          }
-          if (rB === null) {
-            errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[1]}"` });
-            bytes.push(0x00);
-            break;
-          }
-          bytes.push(encode(instrDef.opcode, rA, rB));
-        }
+      case 'alu': { // ADD R0, R1 — or NOT R0 (single operand)
+        const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
+        const rB = line.args.length >= 2 ? resolveReg(line.args[1], line.lineNum) : rA;
+        output.push(info.opcode);
+        output.push((rA << 4) | rB);
         break;
       }
 
-      case 'data': {
-        // DATA RA, value
-        if (p.args.length < 2) {
-          errors.push({ line: p.lineNum, message: `DATA requires register and value (e.g. DATA R0, 42)` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const val = resolveOperand(p.args[1], p.lineNum);
-        if (val === null) { bytes.push(0x00, 0x00); break; }
-        bytes.push(encode(instrDef.opcode, rA, 0), val & 0xFF);
+      case 'reg1': { // PUSH R0, POP R0, OUT R0, IN R0, JMPR R0
+        const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
+        output.push(info.opcode);
+        output.push((rA << 4) | 0);
         break;
       }
 
-      case 'load': {
-        // LOAD RA, [addr] or LOAD RA, addr or LOAD RA, label
-        if (p.args.length < 2) {
-          errors.push({ line: p.lineNum, message: `LOAD requires register and address (e.g. LOAD R0, [200])` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const addr2 = resolveOperand(p.args[1], p.lineNum);
-        if (addr2 === null) { bytes.push(0x00, 0x00); break; }
-        bytes.push(encode(instrDef.opcode, rA, 0), addr2 & 0xFF);
+      case 'mem': { // LOAD R0, addr  |  STORE R0, addr
+        const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
+        const addr = resolveValue(line.args[1] ?? '0', line.lineNum);
+        output.push(info.opcode);
+        output.push((rA << 4) | 0);
+        emit16(addr);
         break;
       }
 
-      case 'store': {
-        // STORE RA, [addr]
-        if (p.args.length < 2) {
-          errors.push({ line: p.lineNum, message: `STORE requires register and address (e.g. STORE R0, [200])` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const addr2 = resolveOperand(p.args[1], p.lineNum);
-        if (addr2 === null) { bytes.push(0x00, 0x00); break; }
-        bytes.push(encode(instrDef.opcode, rA, 0), addr2 & 0xFF);
+      case 'imm': { // DATA R0, value
+        const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
+        const val = resolveValue(line.args[1] ?? '0', line.lineNum);
+        output.push(info.opcode);
+        output.push((rA << 4) | 0);
+        emit16(val);
         break;
       }
 
-      case 'jmp_reg': {
-        // JMPR RA
-        if (p.args.length < 1) {
-          errors.push({ line: p.lineNum, message: `JMPR requires a register (e.g. JMPR R0)` });
-          bytes.push(0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00);
-          break;
-        }
-        bytes.push(encode(instrDef.opcode, rA, 0));
-        break;
-      }
-
-      case 'out': {
-        // OUT RA — output register value to console (opcode 0xB with regB=1)
-        if (p.args.length < 1) {
-          errors.push({ line: p.lineNum, message: `OUT requires a register (e.g. OUT R0)` });
-          bytes.push(0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00);
-          break;
-        }
-        bytes.push(encode(instrDef.opcode, rA, 1)); // regB=1 distinguishes OUT from JMPR
-        break;
-      }
-
-      case 'in': {
-        // IN RA — wait for user input, store in register (opcode 0xB with regB=2)
-        if (p.args.length < 1) {
-          errors.push({ line: p.lineNum, message: `IN requires a register (e.g. IN R0)` });
-          bytes.push(0x00);
-          break;
-        }
-        const rA = parseRegister(p.args[0]);
-        if (rA === null) {
-          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
-          bytes.push(0x00);
-          break;
-        }
-        bytes.push(encode(instrDef.opcode, rA, 2)); // regB=2 distinguishes IN
-        break;
-      }
-
-      case 'jmp_addr':
-      case 'jmp_cond': {
-        // JMP addr/label, JC addr/label, JA addr/label, JE addr/label
-        if (p.args.length < 1) {
-          errors.push({ line: p.lineNum, message: `${p.mnemonic} requires a target address or label` });
-          bytes.push(0x00, 0x00);
-          break;
-        }
-        const target = resolveOperand(p.args[0], p.lineNum);
-        if (target === null) { bytes.push(0x00, 0x00); break; }
-        bytes.push(encode(instrDef.opcode, 0, 0), target & 0xFF);
+      case 'jump': { // JMP label  |  CALL label
+        const target = resolveValue(line.args[0] ?? '0', line.lineNum);
+        output.push(info.opcode);
+        emit16(target);
         break;
       }
     }
@@ -423,10 +277,74 @@ export function assemble(source: string): AssemblyResult {
 
   return {
     success: errors.length === 0,
-    bytes,
+    bytes: Array.from(output),
     errors,
+    addressMap,
     addressToLine,
-    labels,
-    size: bytes.length,
+    labelMap,
+    labels: labelMap,
+    size: output.length,
   };
+}
+
+// ── Disassembler ────────────────────────────────────────────────────────
+
+export function disassemble(memory: number[], startAddr: number, length: number): string[] {
+  const lines: string[] = [];
+  let pc = startAddr;
+  const end = Math.min(startAddr + length, memory.length);
+
+  while (pc < end) {
+    const opcode = memory[pc];
+    if (opcode === 0 && pc > 0) {
+      // Likely past end of program
+      lines.push(`${pc.toString(16).padStart(4, '0')}: 00          HALT`);
+      pc += 2;
+      continue;
+    }
+
+    const name = OP[opcode as keyof typeof OP] ? Object.entries(OP).find(([, v]) => v === opcode)?.[0] ?? '???' : '???';
+    const size = instrSize(opcode);
+
+    if (pc + size > end) break;
+
+    const regByte = memory[pc + 1] ?? 0;
+    const rA = (regByte >> 4) & 0x0F;
+    const rB = regByte & 0x0F;
+
+    let text = '';
+    const addrStr = pc.toString(16).padStart(4, '0');
+
+    if (opcode === 0x00) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      HALT`;
+    } else if (opcode >= OP.ADD && opcode <= OP.CMP) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      ${name} R${rA}, R${rB}`;
+    } else if (opcode === OP.LOAD || opcode === OP.STORE || opcode === OP.DATA) {
+      const val = (memory[pc + 3] << 8) | memory[pc + 2];
+      const bytes = `${hex8(opcode)} ${hex8(regByte)} ${hex8(memory[pc + 2])} ${hex8(memory[pc + 3])}`;
+      if (opcode === OP.DATA) {
+        text = `${addrStr}: ${bytes} DATA R${rA}, ${val}`;
+      } else {
+        text = `${addrStr}: ${bytes} ${name} R${rA}, [${val}]`;
+      }
+    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE || opcode === OP.CALL) {
+      const target = (memory[pc + 2] << 8) | memory[pc + 1];
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(memory[pc + 1])} ${hex8(memory[pc + 2])}  ${name} ${target}`;
+    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      ${name} R${rA}`;
+    } else if (opcode === OP.RET) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      RET`;
+    } else {
+      text = `${addrStr}: ${hex8(opcode)}          ???`;
+    }
+
+    lines.push(text);
+    pc += size;
+  }
+
+  return lines;
+}
+
+function hex8(n: number): string {
+  return n.toString(16).padStart(2, '0').toUpperCase();
 }

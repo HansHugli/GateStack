@@ -112,7 +112,7 @@ scripts\dev.bat
 ```
 This rebuilds WASM and starts the dev server.
 
-## Features (v0.2.0)
+## Features (v1.0)
 
 - **19-instruction ISA** — ALU ops, memory access, jumps, conditionals, I/O
 - **Console I/O** — `OUT` prints to terminal, `IN` reads user input with auto-resume
@@ -120,7 +120,7 @@ This rebuilds WASM and starts the dev server.
 - **Assembler** — two-pass with labels, hex/binary/decimal/char literals, comments
 - **Memory editor** — click any RAM cell to edit its value inline
 - **Signal trace** — oscilloscope-style register history waveforms
-- **20 sample programs** — from Hello World to Bubble Sort to interactive Adder
+- **18 sample programs** — from Hello World to Bubble Sort to interactive Adder
 - **Export/Import** — save and load programs as JSON
 - **Help panel** — press `?` for inline ISA reference and keyboard shortcuts
 
@@ -145,7 +145,7 @@ gatestack/
 │   │   ├── assembler.ts     # Two-pass assembler
 │   │   ├── wasm-bridge.ts   # TypeScript types + mock computer
 │   │   ├── components/
-│   │   │   ├── App.tsx      # Main dashboard layout + 20 samples
+│   │   │   ├── App.tsx      # Main dashboard layout + 18 samples
 │   │   │   ├── CpuView.tsx  # Register & flag display
 │   │   │   ├── MemoryView.tsx # Hex dump with click-to-edit
 │   │   │   ├── AluView.tsx  # ALU gate diagram (animated SVG)
@@ -192,10 +192,10 @@ gatestack/
 | `ByteGate8`         | Not needed                   | Register = byte variable       |
 | `MemGate`           | Not needed                   | No gate-level latches          |
 | `Enabler8`          | If-statement in step logic   | Conditional bus read           |
-| `RAM256`            | `[u8; 256]`                  | 256 bytes vs ~90K objects      |
+| `RAM256`            | `[u8; 256]`                  | 64KB vs ~90K objects      |
 | `RAMRegister8`      | Array index                  | `ram[addr]`                    |
 | `Decoder4x16`       | Array index                  | `ram[mar as usize]`            |
-| `Byte8`             | `u8`                         | Native 8-bit type              |
+| `Byte8`             | `u8`                         | Native 16-bit type              |
 | `ControlSection`    | `cpu.rs: step()` method      | State machine                  |
 | `Stepper7`          | Fetch/Decode/Execute phases  | Sequential logic               |
 | `Clock`             | `requestAnimationFrame`      | UI-driven timing               |

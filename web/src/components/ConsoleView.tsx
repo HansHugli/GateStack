@@ -36,7 +36,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
     else if (t.length === 1) val = t.charCodeAt(0);
     else if (t.length === 3 && t[0] === "'" && t[2] === "'") val = t.charCodeAt(1);
 
-    if (val !== null && val >= 0 && val <= 255) {
+    if (val !== null && val >= 0 && val <= 65535) {
       onSubmitInput(val, t);
       setInputText('');
     }
@@ -200,7 +200,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
               onKeyDown={e => {
                 if (e.key === 'Enter') handleInputSubmit();
               }}
-              placeholder="0-255"
+              placeholder="0-65535"
               style={{
                 background: 'transparent', border: 'none', outline: 'none',
                 color: '#93c5fd', fontFamily: 'var(--font-mono)',

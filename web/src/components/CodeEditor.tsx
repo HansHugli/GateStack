@@ -1,5 +1,6 @@
 import React, { useRef, useCallback, useMemo, useState, useEffect } from 'react';
-import { assemble, AssemblyError, AssemblyResult } from '../assembler';
+import { assemble, AssemblyResult } from '../assembler';
+import { OP, getOpcodeName, instrSize } from '../wasm-bridge';
 
 interface Props {
   code: string;
@@ -33,8 +34,15 @@ const EDITOR_STYLES = `
   }
 `;
 
-// Instruction mnemonics for address mapping (same logic as assembler pass 1)
-const TWO_BYTE_OPS = ['DATA', 'LOAD', 'STORE', 'JMP', 'JC', 'JA', 'JE'];
+// Instruction sizes for address mapping
+const MNEMONICS_16: Record<string, number> = {
+  HALT: 2, ADD: 2, SUB: 2, MUL: 2, DIV: 2, MOD: 2,
+  SHR: 2, SHL: 2, NOT: 2, AND: 2, OR: 2, XOR: 2, CMP: 2,
+  PUSH: 2, POP: 2, LDRI: 2, STRI: 2, OUT: 2, IN: 2, JMPR: 2, RET: 2,
+  LOAD: 4, STORE: 4, DATA: 4,
+  JMP: 3, JC: 3, JA: 3, JE: 3, CALL: 3,
+  DB: 1, DW: 2,
+};
 
 function buildAddressToLineMap(code: string): Map<number, number> {
   const map = new Map<number, number>();
@@ -46,32 +54,22 @@ function buildAddressToLineMap(code: string): Map<number, number> {
     if (ci >= 0) line = line.substring(0, ci);
     line = line.trim();
     if (!line) continue;
-    // Strip label
     const lm = line.match(/^[a-zA-Z_]\w*\s*:\s*(.*)/);
     const rest = lm ? lm[1].trim() : line;
     if (!rest) continue;
     const mnemonic = rest.split(/[\s,]+/)[0].toUpperCase();
     map.set(addr, i);
-    if (mnemonic === 'HALT') addr += 1;
-    else if (TWO_BYTE_OPS.includes(mnemonic)) addr += 2;
-    else addr += 1;
+    const size = MNEMONICS_16[mnemonic] ?? 2;
+    addr += size;
   }
   return map;
 }
 
 // ── Disassembly View ────────────────────────────────────────────────────
 
-const OPCODE_NAMES: Record<number, string> = {
-  0x0: 'ADD', 0x1: 'SHR', 0x2: 'SHL', 0x3: 'NOT',
-  0x4: 'AND', 0x5: 'OR',  0x6: 'XOR', 0x7: 'CMP',
-  0x8: 'LOAD', 0x9: 'STORE', 0xA: 'DATA', 0xB: 'JMPR',
-  0xC: 'JMP', 0xD: 'JC', 0xE: 'JA', 0xF: 'JE',
-};
-
 function disassemble(bytes: number[], labels: Map<string, number>): Array<{
   addr: number; hex: string; decoded: string; size: number; label?: string;
 }> {
-  // Reverse label map: addr → name
   const addrToLabel = new Map<number, string>();
   labels.forEach((addr, name) => addrToLabel.set(addr, name));
 
@@ -80,64 +78,56 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
 
   while (i < bytes.length) {
     const addr = i;
-    const b = bytes[i];
+    const opcode = bytes[i];
     const label = addrToLabel.get(addr);
+    const size = instrSize(opcode);
+    const opName = getOpcodeName(opcode);
 
-    if (b === 0x00) {
-      result.push({ addr, hex: '00', decoded: 'HALT', size: 1, label });
-      i += 1;
-      continue;
-    }
+    if (i + size > bytes.length) break;
 
-    const op = (b >> 4) & 0xF;
-    const rA = (b >> 2) & 0x3;
-    const rB = b & 0x3;
-    const name = OPCODE_NAMES[op] ?? '???';
+    const hexBytes = bytes.slice(i, i + size).map(b => h2(b)).join(' ');
+    const regByte = bytes[i + 1] ?? 0;
+    const rA = (regByte >> 4) & 0x0F;
+    const rB = regByte & 0x0F;
 
-    if (op <= 0x7) {
-      // ALU: 1 byte
-      if (op === 0x3) { // NOT
-        result.push({ addr, hex: h2(b), decoded: `${name} R${rA}`, size: 1, label });
+    let decoded = '';
+
+    if (opcode === OP.HALT) {
+      decoded = 'HALT';
+    } else if (opcode >= OP.ADD && opcode <= OP.CMP) {
+      // ALU: 2 bytes
+      if (opcode === OP.NOT || opcode === OP.SHR || opcode === OP.SHL) {
+        decoded = `${opName} R${rA}`;
       } else {
-        result.push({ addr, hex: h2(b), decoded: `${name} R${rA}, R${rB}`, size: 1, label });
+        decoded = `${opName} R${rA}, R${rB}`;
       }
-      i += 1;
-    } else if (op === 0xB) {
-      // JMPR or OUT: 1 byte, distinguished by regB
-      if (rB === 1) {
-        result.push({ addr, hex: h2(b), decoded: `OUT R${rA}`, size: 1, label });
-      } else if (rB === 2) {
-        result.push({ addr, hex: h2(b), decoded: `IN R${rA}`, size: 1, label });
-      } else {
-        result.push({ addr, hex: h2(b), decoded: `JMPR R${rA}`, size: 1, label });
-      }
-      i += 1;
+    } else if (opcode === OP.LOAD || opcode === OP.STORE) {
+      const memAddr = (bytes[i + 3] << 8) | bytes[i + 2];
+      decoded = `${opName} R${rA}, [${memAddr}]`;
+    } else if (opcode === OP.DATA) {
+      const val = (bytes[i + 3] << 8) | bytes[i + 2];
+      const ascii = (val >= 32 && val < 127) ? ` '${String.fromCharCode(val)}'` : '';
+      decoded = `DATA R${rA}, ${val}${ascii}`;
+    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE || opcode === OP.CALL) {
+      const target = (bytes[i + 2] << 8) | bytes[i + 1];
+      const targetLabel = addrToLabel.get(target);
+      decoded = `${opName} ${targetLabel ?? target}`;
+    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
+      decoded = `${opName} R${rA}`;
+    } else if (opcode === OP.RET) {
+      decoded = 'RET';
     } else {
-      // 2-byte instructions
-      const operand = i + 1 < bytes.length ? bytes[i + 1] : 0;
-      const hexStr = h2(b) + ' ' + h2(operand);
-      const targetLabel = addrToLabel.get(operand);
-
-      if (op === 0xA) {
-        // DATA
-        const ascii = (operand >= 32 && operand < 127) ? ` '${String.fromCharCode(operand)}'` : '';
-        result.push({ addr, hex: hexStr, decoded: `DATA R${rA}, ${operand}${ascii}`, size: 2, label });
-      } else if (op === 0x8) {
-        result.push({ addr, hex: hexStr, decoded: `LOAD R${rA}, [${operand}]`, size: 2, label });
-      } else if (op === 0x9) {
-        result.push({ addr, hex: hexStr, decoded: `STORE R${rA}, [${operand}]`, size: 2, label });
-      } else {
-        // JMP, JC, JA, JE
-        const target = targetLabel ? targetLabel : operand.toString();
-        result.push({ addr, hex: hexStr, decoded: `${name} ${target}`, size: 2, label });
-      }
-      i += 2;
+      decoded = `??? (0x${h2(opcode)})`;
     }
+
+    result.push({ addr, hex: hexBytes, decoded, size, label });
+    i += size;
   }
   return result;
 }
 
 function h2(n: number) { return n.toString(16).padStart(2, '0').toUpperCase(); }
+function h4(n: number) { return n.toString(16).padStart(4, '0').toUpperCase(); }
 
 function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
   bytes: number[];
@@ -151,7 +141,7 @@ function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
     <div style={{ fontFamily: FONT_FAMILY, fontSize: '0.68rem' }}>
       {/* Header */}
       <div style={{
-        display: 'grid', gridTemplateColumns: '48px 54px 1fr',
+        display: 'grid', gridTemplateColumns: '48px 100px 1fr',
         gap: '8px', padding: '2px 0', marginBottom: '4px',
         borderBottom: '1px solid #1e293b', color: '#475569', fontWeight: 600,
       }}>
@@ -172,14 +162,14 @@ function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
             )}
             {/* Instruction line */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '48px 54px 1fr',
+              display: 'grid', gridTemplateColumns: '48px 100px 1fr',
               gap: '8px', padding: '1px 4px',
               borderRadius: isPC ? '4px' : '0',
               background: isPC ? 'rgba(250, 204, 21, 0.1)' : 'transparent',
               borderLeft: isPC ? '2px solid #fcd34d' : '2px solid transparent',
             }}>
               <span style={{ color: isPC ? '#fcd34d' : '#475569' }}>
-                {h2(entry.addr)}
+                {h4(entry.addr)}
               </span>
               <span style={{ color: isPC ? '#e2e8f0' : '#64748b' }}>
                 {entry.hex}
@@ -369,14 +359,14 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
               ...(showSuccess ? { animation: 'successFlash 1.2s ease-out' } : {}),
             }}>
               {lastResult.success
-                ? `✓ ${lastResult.size}B`
+                ? `✓ ${lastResult.size ?? lastResult.bytes?.length ?? 0}B`
                 : `✗ ${lastResult.errors.length} err`
               }
             </span>
           )}
         </div>
         <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary, #94a3b8)', fontWeight: 400, fontFamily: FONT_FAMILY }}>
-          PC:{currentAddress.toString(16).padStart(2, '0').toUpperCase()}
+          PC:{currentAddress.toString(16).padStart(4, '0').toUpperCase()}
           {activeLine >= 0 && <span style={{ color: 'var(--accent-amber, #fcd34d)' }}> L{activeLine + 1}</span>}
         </span>
       </div>
@@ -422,7 +412,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                   onToggleBreakpoint(lineToAddr.get(i)!);
                 }
               }}
-              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(2, '0')}` : undefined}
+              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(4, '0')}` : undefined}
               >
                 {/* Breakpoint dot area */}
                 <span style={{
@@ -607,8 +597,8 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
               Output
             </span>
             <span style={{ fontSize: '0.62rem', color: 'var(--text-dim, #475569)' }}>
-              {lastResult.size}B
-              {lastResult.labels.size > 0 && ` · ${lastResult.labels.size} labels`}
+              {lastResult.size ?? lastResult.bytes?.length ?? 0}B
+              {(lastResult.labels?.size ?? 0) > 0 && ` · ${lastResult.labels.size} labels`}
             </span>
           </div>
 
@@ -619,27 +609,27 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
               flex: 1, overflow: 'auto',
             }}>
               {/* Labels summary */}
-              {lastResult.labels.size > 0 && (
+              {(lastResult.labels?.size ?? 0) > 0 && (
                 <div style={{
                   display: 'flex', flexWrap: 'wrap', gap: '8px',
                   marginBottom: '6px', paddingBottom: '6px',
                   borderBottom: '1px solid #1e293b',
                 }}>
-                  {Array.from(lastResult.labels.entries()).map(([name, addr]) => (
+                  {Array.from(lastResult.labels?.entries() ?? []).map(([name, addr]) => (
                     <span key={name} style={{
                       fontSize: '0.65rem', fontFamily: FONT_FAMILY,
                       padding: '1px 6px', background: '#1e293b', borderRadius: '3px',
                     }}>
                       <span style={{ color: '#c084fc' }}>{name}</span>
                       <span style={{ color: '#475569' }}> = </span>
-                      <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(2, '0').toUpperCase()} ({addr})</span>
+                      <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(4, '0').toUpperCase()} ({addr})</span>
                     </span>
                   ))}
                 </div>
               )}
 
               {/* Disassembly listing */}
-              <DisassemblyView bytes={lastResult.bytes} addressToLine={lastResult.addressToLine} labels={lastResult.labels} currentAddress={currentAddress} />
+              <DisassemblyView bytes={lastResult.bytes ?? []} addressToLine={lastResult.addressToLine ?? new Map()} labels={lastResult.labels ?? new Map()} currentAddress={currentAddress} />
             </div>
           )}
         </div>

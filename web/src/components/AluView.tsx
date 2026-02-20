@@ -1,7 +1,7 @@
 import React from 'react';
 import { CycleTrace } from '../wasm-bridge';
 
-const hex = (n: number) => '0x' + n.toString(16).padStart(2, '0').toUpperCase();
+const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0').toUpperCase();
 const bin = (n: number) => n.toString(2).padStart(8, '0');
 
 const ALU_STYLES = `

@@ -40,7 +40,7 @@ export interface ComputerHook {
   submitInput: (value: number, displayText?: string) => void;
 }
 
-const HISTORY_SIZE = 256;
+const HISTORY_SIZE = 64;
 
 export function useComputer(initialProgram?: number[]): ComputerHook {
   const computerRef = useRef<IComputer | null>(null);
@@ -53,7 +53,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const cpuHistory = useRef<CpuState[]>([]);
 
   const [state, setState] = useState<CpuState | null>(null);
-  const [memory, setMemory] = useState<number[]>(new Array(256).fill(0));
+  const memoryRef = useRef<number[]>(new Array(65536).fill(0));
+  const [memoryVersion, setMemoryVersion] = useState(0);
   const [trace, setTrace] = useState<CycleTrace | null>(null);
   const [traceHistory, setTraceHistory] = useState<CpuState[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -82,7 +83,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     if (!c) return;
     const s = c.getState();
     setState(s);
-    setMemory(c.getAllMemory());
+    memoryRef.current = c.getRawMemory();
+    setMemoryVersion(v => v + 1);
     setConsoleOutput(c.getConsoleOutput());
     setWaitingForInput(c.getInputRequest());
     return s;
@@ -184,7 +186,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
         } else {
           executed = computerRef.current.run(speed);
           halted = computerRef.current.isHalted();
-          hitBreakpoint = executed < speed && !halted;
+          hitBreakpoint = executed < speed && !halted && breakpoints.has(computerRef.current.getPc());
         }
 
         const s = refreshState();
@@ -284,8 +286,11 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     }
   }, [refreshState, run]);
 
+  // Expose memory ref (no copy) + version for re-render triggers
+  const memory = memoryRef.current;
+
   return {
-    state, memory, trace, traceHistory, isRunning, isReady,
+    state, memory, memoryVersion, trace, traceHistory, isRunning, isReady,
     breakpoints, consoleOutput, canStepBack, waitingForInput,
     loadProgram, step, stepBack, run, pause, reset, hardReset,
     setSpeed, poke, toggleBreakpoint, clearBreakpoints, clearConsole,

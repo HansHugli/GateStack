@@ -39,24 +39,34 @@ const S: Record<string, React.CSSProperties> = {
 };
 
 const ISA = [
-  ['ADD rA, rB', '0x0', 'rA = rA + rB, set flags'],
-  ['SHR rA, rB', '0x1', 'rA = rA >> 1 (shift right)'],
-  ['SHL rA, rB', '0x2', 'rA = rA << 1 (shift left)'],
-  ['NOT rA', '0x3', 'rA = ~rA (bitwise NOT)'],
-  ['AND rA, rB', '0x4', 'rA = rA & rB'],
-  ['OR rA, rB', '0x5', 'rA = rA | rB'],
-  ['XOR rA, rB', '0x6', 'rA = rA ^ rB'],
-  ['CMP rA, rB', '0x7', 'Compare — sets flags only, no write'],
-  ['LOAD rA, [addr]', '0x8', 'rA = RAM[addr]'],
-  ['STORE rA, [addr]', '0x9', 'RAM[addr] = rA'],
-  ['DATA rA, imm', '0xA', 'rA = immediate value (0-255)'],
-  ['JMPR rA', '0xB₀', 'Jump to address in rA'],
-  ['OUT rA', '0xB₁', 'Print rA value to console'],
-  ['IN rA', '0xB₂', 'Read user input into rA'],
-  ['JMP label', '0xC', 'Unconditional jump'],
-  ['JC label', '0xD', 'Jump if carry flag set'],
-  ['JA label', '0xE', 'Jump if A > B (after CMP)'],
-  ['JE label', '0xF', 'Jump if A == B (after CMP)'],
+  ['ADD rA, rB', '0x01', 'rA = rA + rB'],
+  ['SUB rA, rB', '0x02', 'rA = rA - rB'],
+  ['MUL rA, rB', '0x03', 'rA = rA × rB'],
+  ['DIV rA, rB', '0x04', 'rA = rA ÷ rB (integer)'],
+  ['MOD rA, rB', '0x05', 'rA = rA % rB (remainder)'],
+  ['SHR rA', '0x06', 'rA = rA >> 1'],
+  ['SHL rA', '0x07', 'rA = rA << 1'],
+  ['NOT rA', '0x08', 'rA = ~rA (bitwise NOT)'],
+  ['AND rA, rB', '0x09', 'rA = rA & rB'],
+  ['OR rA, rB', '0x0A', 'rA = rA | rB'],
+  ['XOR rA, rB', '0x0B', 'rA = rA ^ rB'],
+  ['CMP rA, rB', '0x0C', 'Compare — sets flags only'],
+  ['LOAD rA, [addr]', '0x10', 'rA = RAM[addr16]'],
+  ['STORE rA, [addr]', '0x11', 'RAM[addr16] = rA (low byte)'],
+  ['DATA rA, imm16', '0x12', 'rA = immediate (0-65535)'],
+  ['PUSH rA', '0x13', 'Push rA onto stack'],
+  ['POP rA', '0x14', 'Pop top of stack into rA'],
+  ['LDRI rA, rB', '0x15', 'rA = RAM[rB] (indirect load)'],
+  ['STRI rA, rB', '0x16', 'RAM[rB] = rA (indirect store)'],
+  ['JMP label', '0x18', 'Unconditional jump'],
+  ['JC label', '0x19', 'Jump if carry'],
+  ['JA label', '0x1A', 'Jump if A > B'],
+  ['JE label', '0x1B', 'Jump if A == B'],
+  ['JMPR rA', '0x1C', 'Jump to address in rA'],
+  ['CALL label', '0x1D', 'Push return addr, jump'],
+  ['RET', '0x1E', 'Pop return addr, jump back'],
+  ['OUT rA', '0x1F', 'Print rA (low byte) to console'],
+  ['IN rA', '0x20', 'Read user input into rA'],
   ['HALT', '0x00', 'Stop execution'],
 ];
 
@@ -84,7 +94,7 @@ export default function HelpPanel({ onClose }: Props) {
         </div>
 
         <p style={{ ...S.dim, marginBottom: 12, lineHeight: 1.5 }}>
-          8-bit CPU emulator with 4 registers (R0–R3), 256 bytes of RAM, and {ISA.length} instructions.
+          16-bit CPU with 16 registers (R0–R15), 64KB RAM, stack, and {ISA.length} instructions.
           Write assembly in the editor, press Ctrl+Enter to assemble, then Step or Run.
         </p>
 

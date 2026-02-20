@@ -1,189 +1,71 @@
-# GateStack ISA Reference
+# GateStack v1.0 — ISA Reference
 
-Complete instruction set and architecture reference for GateStack v0.2.0.
+## Architecture
 
-## Registers
-
-| Register | Encoding | Description |
-|----------|----------|-------------|
-| R0 | `00` | General purpose |
-| R1 | `01` | General purpose |
-| R2 | `10` | General purpose |
-| R3 | `11` | General purpose |
-| ACC | — | Accumulator (internal, holds ALU result) |
-| TMP | — | Temporary (internal, holds second operand) |
-| IAR | — | Instruction Address Register (program counter) |
-| IR | — | Instruction Register (current instruction) |
-
-## Flags
-
-Set by all ALU operations and CMP.
-
-| Flag | Set when |
-|------|----------|
-| `carry` | Addition result > 255 (unsigned overflow) |
-| `a_larger` | regA > regB (unsigned comparison) |
-| `equal` | regA == regB |
-| `zero` | Result == 0 |
+- **Word size**: 16-bit registers, 8-bit memory cells
+- **Registers**: R0–R15 (16 general-purpose 16-bit registers), IAR, IR, ACC, TMP, MAR, SP
+- **RAM**: 64KB (65536 bytes), byte-addressable
+- **Stack**: Grows downward from 0x9FFF (below video RAM)
+- **Flags**: Carry, Zero, A>B, Equal (set by ALU ops and CMP)
 
 ## Instruction Encoding
 
-```
-Single byte:  [4-bit opcode][2-bit regA][2-bit regB]
-Two-byte:     [4-bit opcode][2-bit regA][2-bit 00] [8-bit operand]
+| Type | Format | Size |
+|------|--------|------|
+| ALU ops | `[opcode:8] [rA:4 \| rB:4]` | 2 bytes |
+| PUSH/POP/OUT/IN/JMPR/LDRI/STRI | `[opcode:8] [rA:4 \| rB:4]` | 2 bytes |
+| HALT/RET | `[opcode:8] [0x00]` | 2 bytes |
+| JMP/JC/JA/JE/CALL | `[opcode:8] [addr_lo:8] [addr_hi:8]` | 3 bytes |
+| LOAD/STORE/DATA | `[opcode:8] [rA:4 \| 0:4] [val_lo:8] [val_hi:8]` | 4 bytes |
 
-  7  6  5  4  3  2  1  0
- ┌──┬──┬──┬──┬──┬──┬──┬──┐
- │  OPCODE   │ REG_A │REG_B│
- └──┴──┴──┴──┴──┴──┴──┴──┘
-  bits 7-4    bits 3-2  1-0
-```
+## Instructions (27)
 
-## Instructions
+| Opcode | Mnemonic | Operands | Description |
+|--------|----------|----------|-------------|
+| 0x00 | HALT | — | Stop execution |
+| 0x01 | ADD | rA, rB | rA = rA + rB |
+| 0x02 | SUB | rA, rB | rA = rA - rB |
+| 0x03 | MUL | rA, rB | rA = rA × rB |
+| 0x04 | DIV | rA, rB | rA = rA ÷ rB (integer) |
+| 0x05 | MOD | rA, rB | rA = rA % rB |
+| 0x06 | SHR | rA | rA = rA >> 1 |
+| 0x07 | SHL | rA | rA = rA << 1 |
+| 0x08 | NOT | rA | rA = ~rA |
+| 0x09 | AND | rA, rB | rA = rA & rB |
+| 0x0A | OR | rA, rB | rA = rA \| rB |
+| 0x0B | XOR | rA, rB | rA = rA ^ rB |
+| 0x0C | CMP | rA, rB | Compare (flags only) |
+| 0x10 | LOAD | rA, [addr16] | rA = RAM[addr] |
+| 0x11 | STORE | rA, [addr16] | RAM[addr] = rA (low byte) |
+| 0x12 | DATA | rA, imm16 | rA = immediate value |
+| 0x13 | PUSH | rA | Push rA onto stack |
+| 0x14 | POP | rA | Pop stack into rA |
+| 0x15 | LDRI | rA, rB | rA = RAM[rB] (indirect load) |
+| 0x16 | STRI | rA, rB | RAM[rB] = rA (indirect store) |
+| 0x18 | JMP | addr16 | Unconditional jump |
+| 0x19 | JC | addr16 | Jump if carry |
+| 0x1A | JA | addr16 | Jump if A > B |
+| 0x1B | JE | addr16 | Jump if equal |
+| 0x1C | JMPR | rA | Jump to address in rA |
+| 0x1D | CALL | addr16 | Push return address, jump |
+| 0x1E | RET | — | Pop return address, jump back |
+| 0x1F | OUT | rA | Output rA (low byte) to console |
+| 0x20 | IN | rA | Read user input into rA |
 
-### ALU Operations (1 byte)
+## Video Display
 
-All ALU ops store the result in regA (except CMP) and update all flags.
-
-| Mnemonic | Opcode | Description |
-|----------|--------|-------------|
-| `ADD rA, rB` | 0x0 | rA = rA + rB |
-| `SHR rA, rB` | 0x1 | rA = rA >> 1 (logical shift right, ignores rB) |
-| `SHL rA, rB` | 0x2 | rA = rA << 1 (shift left, ignores rB) |
-| `NOT rA` | 0x3 | rA = ~rA (bitwise NOT) |
-| `AND rA, rB` | 0x4 | rA = rA & rB |
-| `OR rA, rB` | 0x5 | rA = rA \| rB |
-| `XOR rA, rB` | 0x6 | rA = rA ^ rB |
-| `CMP rA, rB` | 0x7 | Sets flags based on rA vs rB. Does NOT modify any register. |
-
-### Memory & Data (2 bytes)
-
-| Mnemonic | Opcode | Description |
-|----------|--------|-------------|
-| `LOAD rA, [addr]` | 0x8 | rA = RAM[addr] |
-| `STORE rA, [addr]` | 0x9 | RAM[addr] = rA |
-| `DATA rA, value` | 0xA | rA = immediate value (0–255) |
-
-### I/O (1 byte, opcode 0xB variants)
-
-Opcode 0xB is shared between JMPR, OUT, and IN, distinguished by the regB field.
-
-| Mnemonic | Opcode | regB | Description |
-|----------|--------|------|-------------|
-| `JMPR rA` | 0xB | 0 | Jump to address stored in rA |
-| `OUT rA` | 0xB | 1 | Output rA value to console |
-| `IN rA` | 0xB | 2 | Pause execution, read user input into rA |
-
-**IN behavior:** Execution pauses and the console shows a `>` input prompt. The user can enter:
-- A decimal number: `42`
-- A hex number: `0xFF`
-- A single character: `A` (stored as ASCII code 65)
-- A character literal: `'A'`
-
-After the user presses Enter, the value (0–255) is stored in rA and execution resumes automatically if the program was running.
-
-### Jumps (2 bytes)
-
-| Mnemonic | Opcode | Description |
-|----------|--------|-------------|
-| `JMP label` | 0xC | Unconditional jump |
-| `JC label` | 0xD | Jump if carry flag is set |
-| `JA label` | 0xE | Jump if a_larger flag is set (rA > rB after CMP) |
-| `JE label` | 0xF | Jump if equal flag is set (rA == rB after CMP) |
-
-### Special
-
-| Mnemonic | Opcode | Description |
-|----------|--------|-------------|
-| `HALT` | 0x00 | Stop execution |
-
-Note: HALT is encoded as `ADD R0, R0` (all zeros). Since adding R0 to itself is a no-op in practice, address 0x00 containing 0x00 acts as a halt sentinel.
+- **Resolution**: 32×32 pixels, 4 colors, 2 bits per pixel (packed)
+- **Pixel format**: 4 pixels per byte, MSB first (bits 7-6 = pixel 0)
+- **Video RAM**: 256 bytes at 0xA000–0xA0FF
+- **Colors**: 0 = off, 1 = dim, 2 = mid, 3 = bright
+- **Rendering**: Real-time — write directly to video RAM, display updates live
 
 ## Assembly Syntax
 
-### Labels
-```asm
-loop:   ADD  R0, R1
-        JMP  loop
+```
+label:  MNEMONIC  operand1, operand2  ; comment
 ```
 
-### Number Formats
-| Format | Example | Value |
-|--------|---------|-------|
-| Decimal | `42` | 42 |
-| Hex | `0xFF` | 255 |
-| Binary | `0b1010` | 10 |
-| Character | `'A'` | 65 |
-| Negative | `-1` | 255 (two's complement) |
-
-### Comments
-```asm
-        DATA R0, 42     ; this is a comment
-; this entire line is a comment
-```
-
-### Data Directives
-```asm
-        DB 0xFF         ; place raw byte at current address
-```
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `S` | Step one instruction |
-| `B` | Step back (undo) |
-| `R` | Run (continuous) |
-| `P` / `Esc` | Pause |
-| `Ctrl+Enter` | Assemble code |
-| `?` | Toggle help panel |
-
-### Electron-only
-| Key | Action |
-|-----|--------|
-| `F5` | Run |
-| `F9` | Step back |
-| `F10` | Step |
-| `F6` | Pause |
-
-## Debugger Features
-
-### Breakpoints
-Click the gutter (left of line numbers) in the code editor to toggle breakpoints. A red dot marks the breakpoint. During Run mode, execution pauses when the program counter reaches a breakpoint address.
-
-### Step-Back (Undo)
-Press `B` or click ⏮ Back to rewind one instruction. Full CPU state, RAM, and console output are restored. Up to 256 steps of history are retained.
-
-### Memory Editor
-Click any cell in the RAM hex view to edit its value. Accepts hex (`FF`, `0xFF`), decimal (`255`), or character literals (`'A'`). Press Tab to advance to the next cell.
-
-### Console I/O
-The console panel supports three display modes (switchable via chips):
-- **ASCII** — text output with blinking cursor
-- **HEX** — raw byte values in hexadecimal
-- **DEC** — raw byte values in decimal
-
-## Sample Programs
-
-| # | Name | Description |
-|---|------|-------------|
-| 1 | Add | Basic addition: 15 + 27 = 42 |
-| 2 | Count | Loop from 0 to 10 |
-| 3 | Fibonacci | Generate sequence up to 233 |
-| 4 | Shift | SHL/SHR bit manipulation |
-| 5 | Logic | AND, OR, XOR, NOT demonstrations |
-| 6 | Multiply | 7 × 6 = 42 via repeated addition |
-| 7 | Division | 100 ÷ 7 with quotient and remainder |
-| 8 | Hello | Print "Hello World!" to console using OUT |
-| 9 | Sort | Bubble sort 4 values in RAM |
-| 10 | Stack | Push/Pop with simulated stack pointer |
-| 11 | Flags | Flag behavior demonstrations |
-| 12 | Power | Compute 2^8 (overflows to 0) |
-| 13 | Pattern | Checkerboard pattern in RAM |
-| 14 | GCD | Greatest common divisor of 48 and 18 |
-| 15 | Abs | Absolute value using two's complement |
-| 16 | MinMax | Find min and max of 5 values |
-| 17 | Primes | Trial division sieve for primes < 128 |
-| 18 | Pi | Leibniz series approximation of π |
-| 19 | Echo | Interactive echo loop (IN/OUT) |
-| 20 | Adder | Add two user inputs, print decimal result |
+- Labels: `name:` at start of line
+- Numbers: decimal `42`, hex `0xFF`, binary `0b1010`, char `'A'`
+- Directives: `DB value` (raw byte), `DW value` (raw 16-bit word)
