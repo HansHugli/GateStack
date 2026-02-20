@@ -44,17 +44,21 @@ export default function Toolbar({ computer }: Props) {
     fontFamily: 'var(--font-ui)',
   });
 
+  const waiting = !!computer.waitingForInput;
+
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 6,
       padding: '5px 14px', borderBottom: '1px solid var(--border-subtle)',
     }}>
-      <ToolBtn icon="⏭" label="Step" color="#3b82f6" onClick={computer.step} disabled={computer.isRunning} />
+      <ToolBtn icon="⏭" label="Step" color="#3b82f6" onClick={computer.step} disabled={computer.isRunning || waiting} />
+      <ToolBtn icon="⏮" label="Back" color="#8b5cf6" onClick={computer.stepBack} disabled={computer.isRunning || !computer.canStepBack || waiting} />
       <ToolBtn
         icon={computer.isRunning ? '⏸' : '▶'}
         label={computer.isRunning ? 'Pause' : 'Run'}
         color={computer.isRunning ? '#ef4444' : '#22c55e'}
         onClick={computer.isRunning ? computer.pause : computer.run}
+        disabled={waiting && !computer.isRunning}
       />
       <ToolBtn icon="↺" label="Reset" color="#eab308" onClick={computer.reset} />
       <ToolBtn icon="⟲" label="Clear" color="#8b5cf6" onClick={computer.hardReset} />
@@ -98,8 +102,23 @@ export default function Toolbar({ computer }: Props) {
         }}>HALTED</span>
       )}
 
+      {computer.breakpoints.size > 0 && (
+        <span
+          onClick={() => computer.clearBreakpoints()}
+          style={{
+            fontSize: '0.62rem', color: '#f87171', fontWeight: 600,
+            padding: '1px 6px', background: 'rgba(239,68,68,0.1)', borderRadius: 3,
+            border: '1px solid rgba(239,68,68,0.2)',
+            cursor: 'pointer', userSelect: 'none' as const,
+          }}
+          title="Click to clear all breakpoints"
+        >
+          🔴 {computer.breakpoints.size} BP
+        </span>
+      )}
+
       <span style={{ fontSize: '0.55rem', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-        S·Step  R·Run  P·Pause  Ctrl+Enter·Assemble
+        S·Step  B·Back  R·Run  P·Pause  Ctrl+Enter·Assemble
       </span>
     </div>
   );

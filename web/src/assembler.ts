@@ -28,7 +28,7 @@ export interface AssemblyResult {
 
 interface InstrDef {
   opcode: number;
-  type: 'alu' | 'data' | 'load' | 'store' | 'jmp_reg' | 'jmp_addr' | 'jmp_cond' | 'halt';
+  type: 'alu' | 'data' | 'load' | 'store' | 'jmp_reg' | 'jmp_addr' | 'jmp_cond' | 'halt' | 'out' | 'in';
 }
 
 const INSTRUCTIONS: Record<string, InstrDef> = {
@@ -44,6 +44,8 @@ const INSTRUCTIONS: Record<string, InstrDef> = {
   'STORE': { opcode: 0x9, type: 'store' },
   'DATA':  { opcode: 0xA, type: 'data' },
   'JMPR':  { opcode: 0xB, type: 'jmp_reg' },
+  'OUT':   { opcode: 0xB, type: 'out' },
+  'IN':    { opcode: 0xB, type: 'in' },
   'JMP':   { opcode: 0xC, type: 'jmp_addr' },
   'JC':    { opcode: 0xD, type: 'jmp_cond' },
   'JA':    { opcode: 0xE, type: 'jmp_cond' },
@@ -195,6 +197,8 @@ export function assemble(source: string): AssemblyResult {
         break;
       case 'alu':
       case 'jmp_reg':
+      case 'out':
+      case 'in':
         addr += 1;
         break;
       case 'data':
@@ -364,6 +368,40 @@ export function assemble(source: string): AssemblyResult {
           break;
         }
         bytes.push(encode(instrDef.opcode, rA, 0));
+        break;
+      }
+
+      case 'out': {
+        // OUT RA — output register value to console (opcode 0xB with regB=1)
+        if (p.args.length < 1) {
+          errors.push({ line: p.lineNum, message: `OUT requires a register (e.g. OUT R0)` });
+          bytes.push(0x00);
+          break;
+        }
+        const rA = parseRegister(p.args[0]);
+        if (rA === null) {
+          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
+          bytes.push(0x00);
+          break;
+        }
+        bytes.push(encode(instrDef.opcode, rA, 1)); // regB=1 distinguishes OUT from JMPR
+        break;
+      }
+
+      case 'in': {
+        // IN RA — wait for user input, store in register (opcode 0xB with regB=2)
+        if (p.args.length < 1) {
+          errors.push({ line: p.lineNum, message: `IN requires a register (e.g. IN R0)` });
+          bytes.push(0x00);
+          break;
+        }
+        const rA = parseRegister(p.args[0]);
+        if (rA === null) {
+          errors.push({ line: p.lineNum, message: `Invalid register: "${p.args[0]}"` });
+          bytes.push(0x00);
+          break;
+        }
+        bytes.push(encode(instrDef.opcode, rA, 2)); // regB=2 distinguishes IN
         break;
       }
 

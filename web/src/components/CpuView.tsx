@@ -61,7 +61,7 @@ export default function CpuView({ state, trace }: Props) {
               }}>{val}</span>
               <span style={{
                 fontFamily: 'var(--font-mono)', fontSize: '0.58rem',
-                color: 'var(--text-dim)', letterSpacing: '0.5px',
+                color: 'var(--text-muted)', letterSpacing: '0.5px',
               }}>{bin(val)}</span>
             </div>
           </div>
@@ -70,7 +70,7 @@ export default function CpuView({ state, trace }: Props) {
 
       {/* Special Registers */}
       <div style={{
-        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-dim)',
+        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-muted)',
         textTransform: 'uppercase' as const, letterSpacing: '0.8px',
         marginTop: 10, marginBottom: 4,
       }}>
@@ -96,13 +96,13 @@ export default function CpuView({ state, trace }: Props) {
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: '0.72rem',
             color: 'var(--text-secondary)',
-          }}>{hex(value)} <span style={{ fontSize: '0.6rem', color: 'var(--text-dim)' }}>{value}</span></span>
+          }}>{hex(value)} <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{value}</span></span>
         </div>
       ))}
 
       {/* Flags */}
       <div style={{
-        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-dim)',
+        fontSize: '0.62rem', fontWeight: 600, color: 'var(--text-muted)',
         textTransform: 'uppercase' as const, letterSpacing: '0.8px',
         marginTop: 10, marginBottom: 6,
       }}>

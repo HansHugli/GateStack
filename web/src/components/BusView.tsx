@@ -88,13 +88,19 @@ export default function BusView({ state, trace }: Props) {
   const tipInfo = TOOLTIPS[tooltip.id];
 
   return (
-    <div style={{ padding: '12px', borderBottom: '1px solid #1e293b', minHeight: '190px', position: 'relative' }}>
+    <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle, #1e293b)', minHeight: '190px', position: 'relative' }}>
       <style>{ANIM_STYLES}</style>
       <div style={{
-        fontSize: '0.8rem', fontWeight: 700, color: '#ef4444', marginBottom: '6px',
+        fontSize: '0.68rem', fontWeight: 700, marginBottom: '6px',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
-        <span>🔌 Data Bus</span>
+        <div style={{
+          color: 'var(--text-muted, #4a5568)', textTransform: 'uppercase' as const,
+          letterSpacing: '1px', display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <div style={{ width: 3, height: 12, borderRadius: 2, background: '#f59e0b' }} />
+          Data Bus
+        </div>
         {trace?.opcode && (
           <span style={{ fontWeight: 400, fontSize: '0.72rem' }}>
             <span style={{ color: '#a78bfa', fontWeight: 600 }}>{trace.opcode}</span>
@@ -114,7 +120,7 @@ export default function BusView({ state, trace }: Props) {
               fill="#ef4444" opacity="0.15"
               style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           )}
-          <text x="255" y="64" textAnchor="middle" fill="#475569" fontSize="7">
+          <text x="255" y="64" textAnchor="middle" fill="#8b95a8" fontSize="7">
             BUS {hex(state.bus)} ({state.bus})
           </text>
 
@@ -172,14 +178,14 @@ export default function BusView({ state, trace }: Props) {
 
                 {/* Label */}
                 <text x={cx} y={comp.y + 13} textAnchor="middle"
-                  fill={active ? '#fff' : '#64748b'}
+                  fill={active ? '#fff' : '#8b95a8'}
                   fontSize="9" fontWeight="bold" pointerEvents="none">
                   {comp.id}
                 </text>
 
                 {/* Value */}
                 <text x={cx} y={comp.y + 24} textAnchor="middle"
-                  fill={active ? comp.color : '#334155'}
+                  fill={active ? comp.color : '#718096'}
                   fontSize="7" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
                   {hex(comp.value)} ({comp.value})
                 </text>

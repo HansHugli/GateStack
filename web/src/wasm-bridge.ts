@@ -38,6 +38,8 @@ export interface MicroStep {
   FetchOperand?: { value: number };
   Jump?: { target: number; taken: boolean };
   Error?: { message: string };
+  ConsoleOutput?: { register: string; value: number };
+  WaitingForInput?: { register: string };
 }
 
 export interface CycleTrace {
@@ -77,11 +79,20 @@ export interface IComputer {
   hardReset(): void;
   addBreakpoint(addr: number): void;
   removeBreakpoint(addr: number): void;
+  getBreakpoints(): Set<number>;
   isHalted(): boolean;
   getPc(): number;
   getCycleCount(): number;
   getRegister(index: number): number;
   poke(address: number, value: number): void;
+  getConsoleOutput(): number[];
+  clearConsole(): void;
+  getSnapshot(): { state: CpuState; memory: number[]; console: number[] };
+  restoreSnapshot(snap: { state: CpuState; memory: number[]; console: number[] }): void;
+  isWaitingForInput(): boolean;
+  getInputRequest(): { register: number } | null;
+  provideInput(value: number): void;
+  echoToConsole(text: string): void;
 }
 
 // ── Mock Implementation (for UI development) ─────────────────────────────
@@ -95,6 +106,8 @@ class MockComputer implements IComputer {
   };
   private memory = new Uint8Array(256);
   private breakpoints = new Set<number>();
+  private consoleBuffer: number[] = [];
+  private inputWaiting: { register: number; address: number } | null = null;
 
   loadProgram(bytes: Uint8Array): void {
     this.hardReset();
@@ -102,6 +115,16 @@ class MockComputer implements IComputer {
   }
 
   step(): CycleTrace {
+    // If waiting for input, don't execute anything
+    if (this.inputWaiting) {
+      return {
+        address: this.state.iar, opcode: 'IN', reg_a: `R${this.inputWaiting.register}`, reg_b: null,
+        steps: [{ WaitingForInput: { register: `R${this.inputWaiting.register}` } }],
+        flags: { ...this.state.flags }, cycle: this.state.cycle_count,
+        halted: false, error: null,
+      };
+    }
+
     if (this.state.halted) {
       return { address: this.state.iar, opcode: null, reg_a: null, reg_b: null,
                steps: [], flags: null, cycle: this.state.cycle_count, halted: true, error: null };
@@ -123,7 +146,9 @@ class MockComputer implements IComputer {
 
     const opcodeNames = ['ADD','SHR','SHL','NOT','AND','OR','XOR','CMP',
                          'LOAD','STORE','DATA','JMPR','JMP','JC','JA','JE'];
-    const opName = opcodeNames[opcodeNum] ?? '???';
+    let opName = opcodeNames[opcodeNum] ?? '???';
+    if (opcodeNum === 0xB && regB === 1) opName = 'OUT';
+    if (opcodeNum === 0xB && regB === 2) opName = 'IN';
 
     const steps: MicroStep[] = [];
 
@@ -184,10 +209,27 @@ class MockComputer implements IComputer {
       this.state.r[regA] = value;
       steps.push({ BusTransfer: { source: { Immediate: value }, dest: `R${regA}`, value } });
     } else if (opcodeNum === 0xB) {
-      // JMPR: jump to address in register
-      const target = this.state.r[regA];
-      this.state.iar = target;
-      steps.push({ Jump: { target, taken: true } });
+      if (regB === 1) {
+        // OUT: output register value to console
+        const value = this.state.r[regA];
+        this.consoleBuffer.push(value);
+        steps.push({ ConsoleOutput: { register: `R${regA}`, value } });
+      } else if (regB === 2) {
+        // IN: wait for user input → store in register
+        this.inputWaiting = { register: regA, address: addr };
+        this.state.iar = addr; // rewind IAR to re-execute after input provided
+        steps.push({ WaitingForInput: { register: `R${regA}` } });
+        return {
+          address: addr, opcode: 'IN', reg_a: `R${regA}`, reg_b: null,
+          steps, flags: { ...this.state.flags }, cycle: this.state.cycle_count,
+          halted: false, error: null,
+        };
+      } else {
+        // JMPR: jump to address in register
+        const target = this.state.r[regA];
+        this.state.iar = target;
+        steps.push({ Jump: { target, taken: true } });
+      }
     } else if (opcodeNum === 0xC) {
       // JMP: unconditional jump
       const target = this.memory[this.state.iar] ?? 0;
@@ -229,9 +271,10 @@ class MockComputer implements IComputer {
   run(maxCycles: number): number {
     let executed = 0;
     for (let i = 0; i < maxCycles; i++) {
-      if (this.state.halted || this.breakpoints.has(this.state.iar)) break;
+      if (this.state.halted || this.breakpoints.has(this.state.iar) || this.inputWaiting) break;
       this.step();
       executed++;
+      if (this.inputWaiting) break; // IN was hit during step
     }
     return executed;
   }
@@ -239,15 +282,47 @@ class MockComputer implements IComputer {
   getState(): CpuState { return { ...this.state, r: [...this.state.r] as [number, number, number, number] }; }
   getMemory(start: number, len: number): number[] { return Array.from(this.memory.slice(start, start + len)); }
   getAllMemory(): number[] { return Array.from(this.memory); }
-  reset(): void { this.state = { r: [0,0,0,0], acc: 0, tmp: 0, iar: 0, ir: 0, flags: { carry: false, a_larger: false, equal: false, zero: true }, bus: 0, halted: false, cycle_count: 0 }; }
+  reset(): void { this.state = { r: [0,0,0,0], acc: 0, tmp: 0, iar: 0, ir: 0, flags: { carry: false, a_larger: false, equal: false, zero: true }, bus: 0, halted: false, cycle_count: 0 }; this.consoleBuffer = []; this.inputWaiting = null; }
   hardReset(): void { this.reset(); this.memory.fill(0); }
   addBreakpoint(addr: number): void { this.breakpoints.add(addr); }
   removeBreakpoint(addr: number): void { this.breakpoints.delete(addr); }
+  getBreakpoints(): Set<number> { return new Set(this.breakpoints); }
   isHalted(): boolean { return this.state.halted; }
   getPc(): number { return this.state.iar; }
   getCycleCount(): number { return this.state.cycle_count; }
   getRegister(index: number): number { return this.state.r[index] ?? 0; }
   poke(address: number, value: number): void { this.memory[address & 0xFF] = value & 0xFF; }
+  getConsoleOutput(): number[] { return [...this.consoleBuffer]; }
+  clearConsole(): void { this.consoleBuffer = []; }
+  getSnapshot(): { state: CpuState; memory: number[]; console: number[] } {
+    return {
+      state: { ...this.state, r: [...this.state.r] as [number, number, number, number] },
+      memory: Array.from(this.memory),
+      console: [...this.consoleBuffer],
+    };
+  }
+  restoreSnapshot(snap: { state: CpuState; memory: number[]; console: number[] }): void {
+    this.state = { ...snap.state, r: [...snap.state.r] as [number, number, number, number] };
+    this.memory = new Uint8Array(snap.memory);
+    this.consoleBuffer = [...snap.console];
+    this.inputWaiting = null;
+  }
+  isWaitingForInput(): boolean { return this.inputWaiting !== null; }
+  getInputRequest(): { register: number } | null {
+    return this.inputWaiting ? { register: this.inputWaiting.register } : null;
+  }
+  provideInput(value: number): void {
+    if (!this.inputWaiting) return;
+    this.state.r[this.inputWaiting.register] = value & 0xFF;
+    // Advance IAR past the IN instruction (1 byte)
+    this.state.iar = (this.inputWaiting.address + 1) & 0xFF;
+    this.inputWaiting = null;
+  }
+  echoToConsole(text: string): void {
+    for (let i = 0; i < text.length; i++) {
+      this.consoleBuffer.push(text.charCodeAt(i));
+    }
+  }
 }
 
 // ── WASM Adapter (wraps the Rust Computer for the IComputer interface) ──
@@ -368,11 +443,22 @@ class WasmComputer implements IComputer {
   hardReset(): void { if (this.check()) try { this.wasm.hard_reset(); } catch (e) { this.markCorrupted('hardReset', e); } }
   addBreakpoint(addr: number): void { if (this.check()) try { this.wasm.add_breakpoint(addr); } catch (e) { this.markCorrupted('addBreakpoint', e); } }
   removeBreakpoint(addr: number): void { if (this.check()) try { this.wasm.remove_breakpoint(addr); } catch (e) { this.markCorrupted('removeBreakpoint', e); } }
+  getBreakpoints(): Set<number> { return new Set(); } // WASM doesn't expose breakpoint set yet
   isHalted(): boolean { if (!this.check()) return true; try { return this.wasm.is_halted(); } catch (e) { this.markCorrupted('isHalted', e); return true; } }
   getPc(): number { if (!this.check()) return 0; try { return this.wasm.get_pc(); } catch (e) { this.markCorrupted('getPc', e); return 0; } }
   getCycleCount(): number { if (!this.check()) return 0; try { const v = this.wasm.get_cycle_count(); return typeof v === 'bigint' ? Number(v) : v; } catch (e) { this.markCorrupted('getCycleCount', e); return 0; } }
   getRegister(index: number): number { if (!this.check()) return 0; try { return this.wasm.get_register(index); } catch (e) { this.markCorrupted('getRegister', e); return 0; } }
   poke(address: number, value: number): void { if (this.check()) try { this.wasm.poke(address, value); } catch (e) { this.markCorrupted('poke', e); } }
+  getConsoleOutput(): number[] { return []; } // WASM doesn't support OUT yet
+  clearConsole(): void { }
+  getSnapshot(): { state: CpuState; memory: number[]; console: number[] } {
+    return { state: this.getState(), memory: this.getAllMemory(), console: [] };
+  }
+  restoreSnapshot(_snap: { state: CpuState; memory: number[]; console: number[] }): void { }
+  isWaitingForInput(): boolean { return false; }
+  getInputRequest(): { register: number } | null { return null; }
+  provideInput(_value: number): void { }
+  echoToConsole(_text: string): void { }
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────

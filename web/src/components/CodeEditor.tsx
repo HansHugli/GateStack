@@ -6,6 +6,8 @@ interface Props {
   onChange: (code: string) => void;
   currentAddress: number;
   onLoadBytes: (bytes: number[]) => void;
+  breakpoints: Set<number>;
+  onToggleBreakpoint: (addr: number) => void;
 }
 
 const FONT_FAMILY = "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
@@ -24,6 +26,10 @@ const EDITOR_STYLES = `
   }
   @keyframes successFlash {
     0% { background: rgba(74, 222, 128, 0.3); } 100% { background: transparent; }
+  }
+  .gutter-line:hover .bp-dot-area {
+    border-color: rgba(239, 68, 68, 0.4) !important;
+    background: rgba(239, 68, 68, 0.15) !important;
   }
 `;
 
@@ -97,8 +103,14 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
       }
       i += 1;
     } else if (op === 0xB) {
-      // JMPR: 1 byte
-      result.push({ addr, hex: h2(b), decoded: `JMPR R${rA}`, size: 1, label });
+      // JMPR or OUT: 1 byte, distinguished by regB
+      if (rB === 1) {
+        result.push({ addr, hex: h2(b), decoded: `OUT R${rA}`, size: 1, label });
+      } else if (rB === 2) {
+        result.push({ addr, hex: h2(b), decoded: `IN R${rA}`, size: 1, label });
+      } else {
+        result.push({ addr, hex: h2(b), decoded: `JMPR R${rA}`, size: 1, label });
+      }
       i += 1;
     } else {
       // 2-byte instructions
@@ -191,16 +203,18 @@ function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
   );
 }
 
-export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes }: Props) {
+export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes, breakpoints, onToggleBreakpoint }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
-  const highlightRef = useRef<HTMLDivElement>(null);
 
   const [lastResult, setLastResult] = useState<AssemblyResult | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBytes, setShowBytes] = useState(true);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [editorFlex, setEditorFlex] = useState(3); // flex ratio for editor vs output
+  const dragRef = useRef<{ startY: number; startFlex: number } | null>(null);
 
-  // Clear assembler state when code changes externally (e.g. switching sample programs)
+  // Clear assembler state when code changes externally
   const prevCodeRef = useRef(code);
   useEffect(() => {
     if (code !== prevCodeRef.current) {
@@ -211,8 +225,39 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
   }, [code]);
 
   const addrToLine = useMemo(() => buildAddressToLineMap(code), [code]);
+  const lineToAddr = useMemo(() => {
+    const m = new Map<number, number>();
+    addrToLine.forEach((line, addr) => m.set(line, addr));
+    return m;
+  }, [addrToLine]);
   const activeLine = addrToLine.get(currentAddress) ?? -1;
   const lines = code.split('\n');
+
+  // Which lines have breakpoints?
+  const breakpointLines = useMemo(() => {
+    const s = new Set<number>();
+    breakpoints.forEach(addr => {
+      const line = addrToLine.get(addr);
+      if (line !== undefined) s.add(line);
+    });
+    return s;
+  }, [breakpoints, addrToLine]);
+
+  // Auto-scroll to keep active line visible
+  useEffect(() => {
+    if (activeLine >= 0 && textareaRef.current) {
+      const lineTop = PADDING_TOP + activeLine * LINE_HEIGHT;
+      const ta = textareaRef.current;
+      const viewTop = ta.scrollTop;
+      const viewBottom = viewTop + ta.clientHeight;
+      if (lineTop < viewTop + LINE_HEIGHT || lineTop > viewBottom - LINE_HEIGHT * 2) {
+        const target = Math.max(0, lineTop - ta.clientHeight / 3);
+        ta.scrollTop = target;
+        if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = target;
+        setScrollTop(target);
+      }
+    }
+  }, [activeLine]);
 
   // Error line numbers (1-indexed from assembler, convert to 0-indexed)
   const errorLines = useMemo(() => {
@@ -222,9 +267,9 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
   }, [lastResult]);
 
   const handleScroll = useCallback(() => {
-    const scrollTop = textareaRef.current?.scrollTop ?? 0;
-    if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = scrollTop;
-    if (highlightRef.current) highlightRef.current.scrollTop = scrollTop;
+    const st = textareaRef.current?.scrollTop ?? 0;
+    if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = st;
+    setScrollTop(st);
   }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -268,16 +313,24 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
   }, [onChange]);
 
   return (
-    <div style={{ flex: 1, padding: '12px', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ flex: 1, padding: '10px 12px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <style>{EDITOR_STYLES}</style>
 
       {/* Header with Assemble button */}
       <div style={{
-        fontSize: '0.8rem', fontWeight: 700, color: '#22c55e', marginBottom: '8px',
+        fontSize: '0.68rem', fontWeight: 700, color: 'var(--accent-green, #22c55e)',
+        marginBottom: '6px', flexShrink: 0,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span>📝 Assembly Code</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          <div style={{
+            fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted, #4a5568)',
+            textTransform: 'uppercase', letterSpacing: '1px',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <div style={{ width: 3, height: 12, borderRadius: 2, background: 'var(--accent-green, #22c55e)' }} />
+            Assembly
+          </div>
           <button
             onClick={handleAssemble}
             style={{
@@ -286,7 +339,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
               border: '1px solid #22c55e',
               borderRadius: '6px',
               padding: '3px 12px',
-              fontSize: '0.72rem',
+              fontSize: '0.68rem',
               fontWeight: 700,
               cursor: 'pointer',
               transition: 'all 0.15s',
@@ -297,131 +350,136 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
           >
             ▶ Assemble
           </button>
-          <button
-            onClick={handleSave}
-            style={{
-              background: 'transparent', color: '#64748b',
-              border: '1px solid #334155', borderRadius: '6px',
-              padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
-              cursor: 'pointer',
-            }}
-            title="Save assembly to .asm file"
-          >
-            💾 Save
-          </button>
-          <button
-            onClick={handleLoad}
-            style={{
-              background: 'transparent', color: '#64748b',
-              border: '1px solid #334155', borderRadius: '6px',
-              padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
-              cursor: 'pointer',
-            }}
-            title="Load .asm file"
-          >
-            📂 Open
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".asm,.txt,.s"
-            onChange={handleFileChange}
-            style={{ display: 'none' }}
-          />
+          <button onClick={handleSave} style={{
+            background: 'transparent', color: 'var(--text-muted, #64748b)',
+            border: '1px solid var(--border-default, #334155)', borderRadius: '6px',
+            padding: '3px 8px', fontSize: '0.62rem', fontWeight: 600, cursor: 'pointer',
+          }} title="Save .asm">💾</button>
+          <button onClick={handleLoad} style={{
+            background: 'transparent', color: 'var(--text-muted, #64748b)',
+            border: '1px solid var(--border-default, #334155)', borderRadius: '6px',
+            padding: '3px 8px', fontSize: '0.62rem', fontWeight: 600, cursor: 'pointer',
+          }} title="Open .asm">📂</button>
+          <input ref={fileInputRef} type="file" accept=".asm,.txt,.s" onChange={handleFileChange} style={{ display: 'none' }} />
           {lastResult && (
             <span style={{
-              fontSize: '0.68rem',
+              fontSize: '0.62rem',
               color: lastResult.success ? '#4ade80' : '#f87171',
               fontWeight: 600,
               ...(showSuccess ? { animation: 'successFlash 1.2s ease-out' } : {}),
             }}>
               {lastResult.success
-                ? `✓ ${lastResult.size} bytes`
-                : `✗ ${lastResult.errors.length} error${lastResult.errors.length > 1 ? 's' : ''}`
+                ? `✓ ${lastResult.size}B`
+                : `✗ ${lastResult.errors.length} err`
               }
-              {lastResult.success && lastResult.labels.size > 0 && (
-                <span style={{ color: '#64748b', fontWeight: 400 }}>
-                  {' '}({lastResult.labels.size} label{lastResult.labels.size > 1 ? 's' : ''})
-                </span>
-              )}
             </span>
           )}
         </div>
-        <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 400, fontFamily: FONT_FAMILY }}>
-          PC → 0x{currentAddress.toString(16).padStart(2, '0').toUpperCase()}
-          <span style={{ color: '#64748b' }}> ({currentAddress})</span>
-          {activeLine >= 0 && (
-            <span style={{ color: '#fcd34d' }}> line {activeLine + 1}</span>
-          )}
+        <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary, #94a3b8)', fontWeight: 400, fontFamily: FONT_FAMILY }}>
+          PC:{currentAddress.toString(16).padStart(2, '0').toUpperCase()}
+          {activeLine >= 0 && <span style={{ color: 'var(--accent-amber, #fcd34d)' }}> L{activeLine + 1}</span>}
         </span>
       </div>
 
-      {/* Editor area */}
+      {/* Editor area — resizable */}
       <div style={{
-        flex: 1, minHeight: '200px', background: '#0f172a',
-        borderRadius: '8px', border: '1px solid #1e293b', overflow: 'hidden',
+        flex: `${editorFlex} 1 0`, minHeight: '80px', background: 'var(--bg-elevated, #0f172a)',
+        borderRadius: '6px', border: '1px solid var(--border-subtle, #1e293b)', overflow: 'hidden',
         display: 'flex',
       }}>
-        {/* Line numbers gutter */}
+        {/* Line numbers gutter — click to toggle breakpoints */}
         <div
           ref={lineNumbersRef}
           style={{
             paddingTop: `${PADDING_TOP}px`,
-            paddingRight: '8px',
-            paddingLeft: '8px',
             background: '#0c1222',
             borderRight: '1px solid #1e293b',
             fontFamily: FONT_FAMILY,
             fontSize: FONT_SIZE,
             lineHeight: `${LINE_HEIGHT}px`,
             color: '#334155',
-            textAlign: 'right',
-            userSelect: 'none',
+            userSelect: 'none' as const,
             overflow: 'hidden',
             flexShrink: 0,
-            minWidth: '36px',
+            minWidth: '52px',
+            cursor: 'pointer',
           }}
         >
-          {lines.map((_, i) => (
-            <div key={i} style={{
-              height: `${LINE_HEIGHT}px`,
-              color: errorLines.has(i) ? '#f87171'
-                   : i === activeLine ? '#fcd34d'
-                   : '#334155',
-              fontWeight: (i === activeLine || errorLines.has(i)) ? 700 : 400,
-            }}>
-              {i + 1}
-            </div>
-          ))}
+          {lines.map((_, i) => {
+            const hasBreakpoint = breakpointLines.has(i);
+            const isActive = i === activeLine;
+            const isError = errorLines.has(i);
+            const hasAddr = lineToAddr.has(i); // only instruction lines are clickable
+            return (
+              <div key={i} style={{
+                height: `${LINE_HEIGHT}px`,
+                display: 'flex', alignItems: 'center',
+                paddingLeft: '4px', paddingRight: '6px',
+                gap: '4px',
+              }}
+              onClick={() => {
+                if (hasAddr) {
+                  onToggleBreakpoint(lineToAddr.get(i)!);
+                }
+              }}
+              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(2, '0')}` : undefined}
+              >
+                {/* Breakpoint dot area */}
+                <span style={{
+                  width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  background: hasBreakpoint ? '#ef4444' : 'transparent',
+                  border: hasBreakpoint ? '1px solid #f87171' : (hasAddr ? '1px solid transparent' : 'none'),
+                  boxShadow: hasBreakpoint ? '0 0 4px rgba(239,68,68,0.5)' : 'none',
+                  transition: 'all 0.15s',
+                }} />
+                {/* Line number */}
+                <span style={{
+                  flex: 1, textAlign: 'right',
+                  color: isError ? '#f87171' : isActive ? '#fcd34d' : hasBreakpoint ? '#fca5a5' : '#4a5568',
+                  fontWeight: (isActive || isError) ? 700 : 400,
+                  fontSize: '0.72rem',
+                }}>
+                  {i + 1}
+                </span>
+              </div>
+            );
+          })}
         </div>
 
         {/* Code area with highlight overlay */}
         <div style={{ flex: 1, position: 'relative' }}>
-          {/* Highlight layer */}
+          {/* Highlight layer — synced to textarea scroll via transform */}
           <div
-            ref={highlightRef}
             style={{
               position: 'absolute',
               top: 0, left: 0, right: 0, bottom: 0,
-              paddingTop: `${PADDING_TOP}px`,
-              paddingLeft: '4px',
-              paddingRight: '4px',
               overflow: 'hidden',
               pointerEvents: 'none',
             }}
           >
+            <div style={{
+              paddingTop: `${PADDING_TOP}px`,
+              paddingLeft: '4px',
+              paddingRight: '4px',
+              transform: `translateY(-${scrollTop}px)`,
+            }}>
             {lines.map((_, i) => {
               const isActive = i === activeLine;
               const isError = errorLines.has(i);
+              const isBp = breakpointLines.has(i);
               return (
                 <div key={i} style={{
                   height: `${LINE_HEIGHT}px`,
-                  borderRadius: (isActive || isError) ? '6px' : '0',
+                  borderRadius: (isActive || isError || isBp) ? '6px' : '0',
                   border: isError
                     ? '1px solid rgba(239, 68, 68, 0.3)'
                     : isActive
                     ? '1px solid rgba(250, 204, 21, 0.3)'
+                    : isBp
+                    ? '1px solid rgba(239, 68, 68, 0.15)'
                     : '1px solid transparent',
+                  background: isBp && !isActive ? 'rgba(239, 68, 68, 0.06)' : undefined,
                   marginLeft: '2px',
                   marginRight: '2px',
                   boxSizing: 'border-box',
@@ -433,6 +491,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                 }} />
               );
             })}
+            </div>
           </div>
 
           {/* Textarea */}
@@ -474,6 +533,38 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
         </div>
       </div>
 
+      {/* Drag handle to resize editor vs output */}
+      <div
+        style={{
+          height: 6, cursor: 'row-resize', flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '1px 0',
+        }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          dragRef.current = { startY: e.clientY, startFlex: editorFlex };
+          const onMove = (ev: MouseEvent) => {
+            if (!dragRef.current) return;
+            const delta = ev.clientY - dragRef.current.startY;
+            const newFlex = Math.max(1, Math.min(8, dragRef.current.startFlex + delta / 60));
+            setEditorFlex(newFlex);
+          };
+          const onUp = () => {
+            dragRef.current = null;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        }}
+      >
+        <div style={{
+          width: 40, height: 3, borderRadius: 2,
+          background: 'var(--border-default, #1e2a42)',
+          transition: 'background 0.15s',
+        }} />
+      </div>
+
       {/* Error panel */}
       {lastResult && lastResult.errors.length > 0 && (
         <div style={{
@@ -500,32 +591,32 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
 
       {/* Assembled output panel */}
       {lastResult && lastResult.success && (
-        <div style={{ marginTop: '6px' }}>
+        <div style={{ flex: 1, minHeight: '60px', overflow: 'auto', display: 'flex', flexDirection: 'column' as const }}>
           <div
             onClick={() => setShowBytes(!showBytes)}
             style={{
               display: 'flex', alignItems: 'center', gap: '6px',
-              padding: '5px 8px', background: '#0f172a', borderRadius: '6px',
-              cursor: 'pointer', userSelect: 'none',
-              border: '1px solid #1e293b',
+              padding: '4px 8px', background: 'var(--bg-elevated, #0f172a)', borderRadius: 'var(--radius-sm, 4px)',
+              cursor: 'pointer', userSelect: 'none' as const,
+              border: '1px solid var(--border-subtle, #1e293b)',
             }}
           >
-            <span style={{ fontSize: '0.65rem', color: '#475569', transition: 'transform 0.2s',
+            <span style={{ fontSize: '0.62rem', color: 'var(--text-dim, #475569)', transition: 'transform 0.2s',
               transform: showBytes ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-            <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#94a3b8' }}>
-              Assembled Output
+            <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)' }}>
+              Output
             </span>
-            <span style={{ fontSize: '0.65rem', color: '#475569' }}>
-              {lastResult.size} bytes
-              {lastResult.labels.size > 0 && ` · ${lastResult.labels.size} label${lastResult.labels.size > 1 ? 's' : ''}`}
+            <span style={{ fontSize: '0.62rem', color: 'var(--text-dim, #475569)' }}>
+              {lastResult.size}B
+              {lastResult.labels.size > 0 && ` · ${lastResult.labels.size} labels`}
             </span>
           </div>
 
           {showBytes && (
             <div style={{
-              marginTop: '4px', padding: '8px', background: '#0c1222',
-              borderRadius: '6px', border: '1px solid #1e293b',
-              maxHeight: '160px', overflow: 'auto',
+              marginTop: '3px', padding: '6px', background: 'var(--bg-base, #0c1222)',
+              borderRadius: 'var(--radius-sm, 4px)', border: '1px solid var(--border-subtle, #1e293b)',
+              flex: 1, overflow: 'auto',
             }}>
               {/* Labels summary */}
               {lastResult.labels.size > 0 && (
@@ -556,17 +647,21 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
 
       {/* Instruction reference */}
       <div style={{
-        marginTop: '6px', padding: '8px', background: '#0f172a',
-        borderRadius: '6px', fontSize: '0.62rem', color: '#475569',
-        display: 'flex', flexWrap: 'wrap', gap: '6px',
+        marginTop: '4px', padding: '6px 8px', background: 'var(--bg-elevated, #111628)',
+        borderRadius: 'var(--radius-sm, 4px)', fontSize: '0.58rem',
+        color: 'var(--text-muted, #718096)', fontFamily: 'var(--font-mono)',
+        display: 'flex', flexWrap: 'wrap' as const, gap: '4px', flexShrink: 0,
+        border: '1px solid var(--border-subtle, #1e293b)',
       }}>
         {[
           'ADD r,r', 'SHR r,r', 'SHL r,r', 'NOT r', 'AND r,r', 'OR r,r', 'XOR r,r', 'CMP r,r',
           'LOAD r,[addr]', 'STORE r,[addr]', 'DATA r,val',
-          'JMP label', 'JC label', 'JA label', 'JE label', 'JMPR r', 'HALT',
-          'label:', "'A' (char)",
+          'JMP lbl', 'JC lbl', 'JA lbl', 'JE lbl', 'JMPR r', 'OUT r', 'IN r', 'HALT',
         ].map(instr => (
-          <span key={instr} style={{ padding: '1px 4px', background: '#1e293b', borderRadius: '3px' }}>
+          <span key={instr} style={{
+            padding: '1px 5px', background: 'var(--bg-hover, #161d33)', borderRadius: 3,
+            border: '1px solid var(--border-subtle, #1e293b)',
+          }}>
             {instr}
           </span>
         ))}

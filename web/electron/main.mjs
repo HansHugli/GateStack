@@ -1,7 +1,7 @@
 // ============================================================================
 // electron/main.mjs — GateStack Electron Main Process
 // ============================================================================
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell, dialog } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -18,13 +18,13 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     title: 'GateStack — 8-bit Computer Simulator',
-    backgroundColor: '#0a0e1a',
-    show: false, // show after ready-to-show to prevent flash
+    backgroundColor: '#06080f',
+    show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.mjs'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false, // sandbox must be false for preload IPC to work
     },
   });
 
@@ -82,6 +82,7 @@ function buildMenu() {
       label: 'Simulation',
       submenu: [
         { label: 'Step (S)', accelerator: 'F10', click: () => mainWindow?.webContents.send('menu:step') },
+        { label: 'Step Back (B)', accelerator: 'F9', click: () => mainWindow?.webContents.send('menu:stepback') },
         { label: 'Run (R)', accelerator: 'F5', click: () => mainWindow?.webContents.send('menu:run') },
         { label: 'Pause (P)', accelerator: 'F6', click: () => mainWindow?.webContents.send('menu:pause') },
         { type: 'separator' },
@@ -94,12 +95,12 @@ function buildMenu() {
         {
           label: 'About GateStack',
           click: () => {
-            const { dialog } = require('electron');
+            const version = app.getVersion() || '0.2.0';
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'About GateStack',
-              message: 'GateStack v0.1.0',
-              detail: 'A visual 8-bit computer simulator.\n\nBuilt with Electron, React, and (optionally) Rust/WASM.\n\nInspired by Ben Eater\'s breadboard computer.',
+              message: `GateStack v${version}`,
+              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 8-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by Ben Eater\'s breadboard computer.`,
             });
           },
         },

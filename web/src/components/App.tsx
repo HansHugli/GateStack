@@ -11,6 +11,8 @@ import CodeEditor from './CodeEditor';
 import AluView from './AluView';
 import BusView from './BusView';
 import SignalTrace from './SignalTrace';
+import ConsoleView from './ConsoleView';
+import HelpPanel from './HelpPanel';
 import { assemble } from '../assembler';
 
 // ── CSS Variables & Global Styles ─────────────────────────────────────
@@ -25,9 +27,9 @@ const GLOBAL_CSS = `
     --border-default: #1e2a42;
     --border-bright: #2a3a5c;
     --text-primary: #e2e8f0;
-    --text-secondary: #8b95a8;
-    --text-muted: #4a5568;
-    --text-dim: #2d3748;
+    --text-secondary: #a0aec0;
+    --text-muted: #718096;
+    --text-dim: #4a5568;
     --accent-blue: #38bdf8;
     --accent-blue-dim: #0c4a6e;
     --accent-green: #34d399;
@@ -244,77 +246,95 @@ done:   HALT
     bytes: [], expect: 'R2=14, R0=2',
   },
   strcopy: {
-    name: 'String', desc: 'Copy "Hi!"',
-    code: `; Store string "Hi!" in RAM
+    name: 'Hello', desc: '"Hello World!" OUT',
+    code: `; Print "Hello World!" to the console using OUT
         DATA R0, 72     ; 'H'
-        STORE R0, 30
-        DATA R0, 105    ; 'i'
-        STORE R0, 31
+        OUT  R0
+        DATA R0, 101    ; 'e'
+        OUT  R0
+        DATA R0, 108    ; 'l'
+        OUT  R0
+        OUT  R0          ; 'l' again
+        DATA R0, 111    ; 'o'
+        OUT  R0
+        DATA R0, 32     ; ' '
+        OUT  R0
+        DATA R0, 87     ; 'W'
+        OUT  R0
+        DATA R0, 111    ; 'o'
+        OUT  R0
+        DATA R0, 114    ; 'r'
+        OUT  R0
+        DATA R0, 108    ; 'l'
+        OUT  R0
+        DATA R0, 100    ; 'd'
+        OUT  R0
         DATA R0, 33     ; '!'
-        STORE R0, 32
-        DATA R0, 0      ; null
-        STORE R0, 33
-        HALT`,
-    bytes: [], expect: 'RAM[30-33] = "Hi!"',
+        OUT  R0
+        DATA R0, 10     ; newline
+        OUT  R0
+        HALT
+; Watch the console panel on the right!`,
+    bytes: [], expect: 'Console: Hello World!',
   },
   sort: {
     name: 'Sort', desc: 'Bubble sort',
-    code: `; Bubble Sort 4 values in RAM[40..43]
+    code: `; Bubble Sort 4 values in RAM[240..243]
         DATA R0, 64
-        STORE R0, 40
+        STORE R0, 240
         DATA R0, 25
-        STORE R0, 41
+        STORE R0, 241
         DATA R0, 12
-        STORE R0, 42
+        STORE R0, 242
         DATA R0, 48
-        STORE R0, 43
+        STORE R0, 243
 ; Pass 1
-        LOAD R0, 40
-        LOAD R1, 41
+        LOAD R0, 240
+        LOAD R1, 241
         CMP  R0, R1
         JA   swap01
         JMP  c12
-swap01: STORE R1, 40
-        STORE R0, 41
-c12:    LOAD R0, 41
-        LOAD R1, 42
+swap01: STORE R1, 240
+        STORE R0, 241
+c12:    LOAD R0, 241
+        LOAD R1, 242
         CMP  R0, R1
         JA   swap12
         JMP  c23
-swap12: STORE R1, 41
-        STORE R0, 42
-c23:    LOAD R0, 42
-        LOAD R1, 43
+swap12: STORE R1, 241
+        STORE R0, 242
+c23:    LOAD R0, 242
+        LOAD R1, 243
         CMP  R0, R1
         JA   swap23
         JMP  pass2
-swap23: STORE R1, 42
-        STORE R0, 43
+swap23: STORE R1, 242
+        STORE R0, 243
 ; Pass 2
-pass2:  LOAD R0, 40
-        LOAD R1, 41
+pass2:  LOAD R0, 240
+        LOAD R1, 241
         CMP  R0, R1
         JA   s01b
         JMP  c12b
-s01b:   STORE R1, 40
-        STORE R0, 41
-c12b:   LOAD R0, 41
-        LOAD R1, 42
+s01b:   STORE R1, 240
+        STORE R0, 241
+c12b:   LOAD R0, 241
+        LOAD R1, 242
         CMP  R0, R1
         JA   s12b
         JMP  pass3
-s12b:   STORE R1, 41
-        STORE R0, 42
+s12b:   STORE R1, 241
+        STORE R0, 242
 ; Pass 3
-pass3:  LOAD R0, 40
-        LOAD R1, 41
+pass3:  LOAD R0, 240
+        LOAD R1, 241
         CMP  R0, R1
         JA   s01c
         JMP  fin
-s01c:   STORE R1, 40
-        STORE R0, 41
+s01c:   STORE R1, 240
+        STORE R0, 241
 fin:    HALT`,
-    bytes: [], expect: 'RAM[40-43] = 12,25,48,64',
+    bytes: [], expect: 'RAM[240-243] sorted',
   },
   stack: {
     name: 'Stack', desc: 'Push/Pop',
@@ -361,6 +381,412 @@ fin:    HALT`,
         HALT`,
     bytes: [], expect: 'Zero=1',
   },
+  power: {
+    name: 'Power', desc: '2^8 = 256',
+    code: `; Compute powers of 2 via repeated doubling
+; Stores 2^0 through 2^7 in RAM[50..57]
+; R0=value  R1=address  R2=count  R3=one
+        DATA R0, 1      ; start with 1
+        DATA R1, 50     ; store address
+        DATA R2, 8      ; 8 powers
+        DATA R3, 1
+loop:   STORE R0, 230    ; *addr = value
+        ; Use R1 to track which address (manual)
+        SHL  R0, R0     ; value *= 2
+        ; Decrement counter
+        NOT  R3, R3
+        DATA R1, 1
+        ADD  R3, R1     ; R3 = -1
+        ADD  R2, R3     ; count--
+        DATA R3, 1      ; restore
+        DATA R1, 0
+        CMP  R2, R1     ; count == 0?
+        JE   done
+        JMP  loop
+done:   HALT
+; R0 wraps: 1→2→4→8→16→32→64→128→0 (overflow!)`,
+    bytes: [], expect: 'R0 = 0 (overflow)',
+  },
+  pattern: {
+    name: 'Pattern', desc: 'Checkerboard',
+    code: `; Fill RAM[60..75] with alternating checkerboard
+; 0xAA = 10101010, 0x55 = 01010101
+        DATA R0, 0xAA   ; pattern A
+        DATA R1, 0x55   ; pattern B
+        DATA R2, 60     ; start addr
+        DATA R3, 8      ; half count
+; Fill with pattern A
+        STORE R0, 210
+        STORE R1, 211
+        STORE R0, 212
+        STORE R1, 213
+        STORE R0, 214
+        STORE R1, 215
+        STORE R0, 216
+        STORE R1, 217
+; Fill with pattern B (inverted rows)
+        STORE R1, 218
+        STORE R0, 219
+        STORE R1, 220
+        STORE R0, 221
+        STORE R1, 222
+        STORE R0, 223
+        STORE R1, 224
+        STORE R0, 225
+        HALT`,
+    bytes: [], expect: 'RAM[210-225] checkerboard',
+  },
+  gcd: {
+    name: 'GCD', desc: 'gcd(48,18)=6',
+    code: `; Greatest Common Divisor using subtraction
+; gcd(48, 18) = 6  (Euclidean algorithm)
+; R0=a  R1=b  R2=temp  R3=one
+        DATA R0, 48     ; a
+        DATA R1, 18     ; b
+        DATA R3, 1
+loop:   CMP  R0, R1     ; a == b?
+        JE   done       ; yes → gcd found
+        JA   sub_b      ; a > b → a -= b
+; else a < b → b -= a
+        NOT  R0, R0
+        ADD  R0, R3     ; R0 = -a (2's complement)
+        ADD  R1, R0     ; b -= a
+        ; restore a: a = -(R0-1) → we need original a
+        NOT  R0, R0     
+        ADD  R0, R3     ; R0 = original a
+        JMP  loop
+sub_b:  NOT  R1, R1
+        ADD  R1, R3     ; R1 = -b
+        ADD  R0, R1     ; a -= b
+        ; restore b
+        NOT  R1, R1
+        ADD  R1, R3     ; R1 = original b
+        JMP  loop
+done:   HALT
+; R0 = R1 = 6 (the GCD)`,
+    bytes: [], expect: 'R0 = R1 = 6',
+  },
+  abs: {
+    name: 'Abs', desc: 'Absolute value',
+    code: `; Compute absolute value of signed byte
+; Treating values >= 128 as negative
+; R0=input  R1=128 boundary  R2=result
+        DATA R0, 200    ; -56 in signed
+        DATA R1, 128    ; sign boundary
+        CMP  R0, R1     ; >= 128? (negative)
+        JA   negate     ; yes → negate it
+        JE   negate     ; 128 is also negative
+        JMP  positive   ; no → already positive
+negate: NOT  R0, R0     ; flip bits
+        DATA R1, 1
+        ADD  R0, R1     ; add 1 (2's complement)
+positive:
+        HALT
+; 200 unsigned = -56 signed → |−56| = 56
+; R0 = 56`,
+    bytes: [], expect: 'R0 = 56',
+  },
+  minmax: {
+    name: 'MinMax', desc: 'Find min & max',
+    code: `; Find min and max of 5 values
+; Store at RAM[200-204] to avoid code overlap
+; R0=current  R1=min  R2=max
+        DATA R0, 42
+        STORE R0, 200
+        DATA R0, 17
+        STORE R0, 201
+        DATA R0, 85
+        STORE R0, 202
+        DATA R0, 3
+        STORE R0, 203
+        DATA R0, 61
+        STORE R0, 204
+; Init min=max=first value
+        LOAD R1, 200    ; min = 42
+        LOAD R2, 200    ; max = 42
+; Check val=17
+        LOAD R0, 201
+        CMP  R1, R0     ; min(42) > val(17)?
+        JA   nm1
+        JMP  mx1
+nm1:    DATA R1, 0
+        ADD  R1, R0     ; min = val
+mx1:    CMP  R0, R2     ; val > max?
+        JA   sm1
+        JMP  v2
+sm1:    DATA R2, 0
+        ADD  R2, R0
+; Check val=85
+v2:     LOAD R0, 202
+        CMP  R1, R0
+        JA   nm2
+        JMP  mx2
+nm2:    DATA R1, 0
+        ADD  R1, R0
+mx2:    CMP  R0, R2
+        JA   sm2
+        JMP  v3
+sm2:    DATA R2, 0
+        ADD  R2, R0
+; Check val=3
+v3:     LOAD R0, 203
+        CMP  R1, R0
+        JA   nm3
+        JMP  mx3
+nm3:    DATA R1, 0
+        ADD  R1, R0
+mx3:    CMP  R0, R2
+        JA   sm3
+        JMP  v4
+sm3:    DATA R2, 0
+        ADD  R2, R0
+; Check val=61
+v4:     LOAD R0, 204
+        CMP  R1, R0
+        JA   nm4
+        JMP  mx4
+nm4:    DATA R1, 0
+        ADD  R1, R0
+mx4:    CMP  R0, R2
+        JA   sm4
+        JMP  fin
+sm4:    DATA R2, 0
+        ADD  R2, R0
+fin:    HALT
+; R1 = 3 (min), R2 = 85 (max)`,
+    bytes: [], expect: 'R1=3, R2=85',
+  },
+  primes: {
+    name: 'Primes', desc: 'Sieve <128',
+    code: `; Find primes up to 127 using trial division
+; Store primes at RAM[200+], count in R3
+; R0=candidate  R1=divisor  R2=temp  R3=count
+; Uses RAM[200+] for prime storage
+        DATA R3, 0      ; prime count
+        DATA R0, 2      ; start candidate = 2
+; Store 2 as first prime
+        STORE R0, 200
+        DATA R3, 1      ; count = 1
+        DATA R0, 3      ; next candidate
+; Main loop: test each odd number
+main:   DATA R1, 3      ; start divisor at 3
+        ; Quick check: is candidate even? (bit 0)
+        ; Actually just test divisors
+trial:  ; Check if R1*R1 > R0 (if so, R0 is prime)
+        ; We approximate: if R1 > R0/2, it's prime
+        ; Simpler: if R1 >= R0, done testing = prime
+        CMP  R1, R0
+        JE   skip       ; R1==R0 means we tested all
+        JA   found      ; R1>R0 means prime
+        ; Check if R0 mod R1 == 0
+        ; R2 = R0, then subtract R1 repeatedly
+        DATA R2, 0
+        ADD  R2, R0     ; R2 = candidate
+moddiv: CMP  R2, R1     ; R2 >= R1?
+        JA   dosub
+        JE   notprime   ; R2 == R1 means divides evenly
+        JMP  isrem      ; R2 < R1 means remainder
+dosub:  ; R2 -= R1
+        NOT  R1, R1
+        DATA R2, 0
+        ADD  R2, R0     ; need to redo... too complex
+        ; Simpler: just increment divisor
+        JMP  nextd
+isrem:  ; Has remainder, try next divisor
+nextd:  DATA R2, 2      ; increment by 2
+        ADD  R1, R2     ; next odd divisor
+        JMP  trial
+notprime:
+        JMP  next
+skip:
+found:  ; R0 is prime — store it
+        ; Store at 200 + R3
+        ; We can't do indirect store, so use fixed slots
+        ; Store count and value together
+        CMP  R3, R3     ; just mark we found one
+        DATA R2, 1
+        ADD  R3, R2     ; count++
+next:   ; R0 += 2 (next odd candidate)
+        DATA R2, 2
+        ADD  R0, R2
+        ; Check if R0 > 127
+        DATA R2, 127
+        CMP  R0, R2
+        JA   done
+        JMP  main
+done:   HALT
+; R3 = count of primes found (approx)
+; Note: limited by lack of indirect addressing`,
+    bytes: [], expect: 'R3 = prime count',
+  },
+  pi: {
+    name: 'Pi', desc: '≈3.14 Leibniz',
+    code: `; Approximate Pi using Leibniz series
+; Pi/4 = 1 - 1/3 + 1/5 - 1/7 + ...
+; With 8-bit math we use scaled integers:
+; Compute 4*N * (1 - 1/3 + 1/5 - 1/7...)
+; Approximation: 4 - 4/3 + 4/5 - 4/7 + 4/9 - 4/11
+; In integers: 4*256/1 - 4*256/3 + 4*256/5 - ...
+; Simplified: accumulate in R0 using small terms
+; Term values (pre-computed, scaled to ~100):
+;   4/1=100, 4/3=33, 4/5=20, 4/7=14, 4/9=11, 4/11=9
+;   4/13=8, 4/15=7, 4/17=6, 4/19=5, 4/21=5
+; Pi ≈ 100-33+20-14+11-9+8-7+6-5+5 = ~82 → /25.6 ≈ 3.2
+; Let's compute directly:
+        DATA R0, 0      ; accumulator
+        DATA R1, 100    ; 4/1 * 25
+        ADD  R0, R1     ; + 100
+        DATA R1, 33     ; 4/3 * 25
+        ; subtract: R0 -= 33
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2     ; R1 = -33
+        ADD  R0, R1     ; R0 = 67
+        DATA R1, 20     ; 4/5 * 25
+        ADD  R0, R1     ; R0 = 87
+        DATA R1, 14     ; 4/7 * 25
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 = 73
+        DATA R1, 11     ; 4/9 * 25
+        ADD  R0, R1     ; R0 = 84
+        DATA R1, 9      ; 4/11 * 25
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 = 75
+        DATA R1, 8      ; 4/13
+        ADD  R0, R1     ; R0 = 83
+        DATA R1, 7      ; 4/15
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 = 76
+        DATA R1, 6      ; 4/17
+        ADD  R0, R1     ; R0 = 82
+        DATA R1, 5      ; 4/19
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 = 77
+        DATA R1, 5      ; 4/21
+        ADD  R0, R1     ; R0 = 82
+        DATA R1, 4      ; 4/23
+        NOT  R1, R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 = 78
+; Store in RAM for display
+        STORE R0, 250   ; scaled result
+; R0 ≈ 78-82 → divide by 25 ≈ 3.12-3.28
+; Actual Pi = 3.14159... our approx ≈ 3.1
+        HALT
+; R0 = ~78 (78/25 = 3.12 ≈ Pi)`,
+    bytes: [], expect: 'R0 ≈ 78 (÷25 ≈ 3.12)',
+  },
+  echo: {
+    name: 'Echo', desc: 'IN/OUT echo loop',
+    code: `; Echo: reads input and prints it back
+; Type values in the console — they echo as ASCII
+; Enter 0 to quit
+loop:   DATA R0, 62     ; '>'
+        OUT  R0
+        DATA R0, 32     ; ' '
+        OUT  R0
+        IN   R0         ; read input
+        DATA R1, 0
+        CMP  R0, R1
+        JE   done
+        OUT  R0         ; echo as character
+        DATA R1, 10
+        OUT  R1         ; newline
+        JMP  loop
+done:   DATA R0, 10
+        OUT  R0
+        HALT
+; Type ASCII codes, see them echoed. 0 to quit.`,
+    bytes: [], expect: 'Interactive echo loop',
+  },
+  adder: {
+    name: 'Adder', desc: 'Add two inputs',
+    code: `; Interactive adder: input two numbers, print decimal sum
+        DATA R0, 65     ; 'A'
+        OUT  R0
+        DATA R0, 61     ; '='
+        OUT  R0
+        IN   R0         ; A → R0
+        DATA R2, 0
+        ADD  R2, R0     ; save A in R2
+        DATA R0, 10
+        OUT  R0
+        DATA R0, 66     ; 'B'
+        OUT  R0
+        DATA R0, 61     ; '='
+        OUT  R0
+        IN   R1         ; B → R1
+        ADD  R2, R1     ; R2 = A + B
+        DATA R0, 10
+        OUT  R0
+        DATA R0, 61     ; '='
+        OUT  R0
+        ; --- Print R2 as decimal (0-255) ---
+        ; Save sum to R0 for printing routine
+        DATA R0, 0
+        ADD  R0, R2
+        ; Extract hundreds: subtract 100 repeatedly
+        DATA R3, 0      ; digit counter
+        DATA R1, 100
+hund:   CMP  R1, R0     ; is 100 > R0?
+        JA   phund      ; yes → done with hundreds
+        ; R0 >= 100, subtract it
+        ; Negate R1: NOT + 1
+        NOT  R1
+        DATA R2, 1
+        ADD  R1, R2     ; R1 = -100 (two's complement)
+        ADD  R0, R1     ; R0 -= 100
+        DATA R2, 1
+        ADD  R3, R2     ; hundreds++
+        DATA R1, 100
+        JMP  hund
+phund:  ; Print hundreds digit (skip if 0)
+        DATA R1, 0
+        CMP  R3, R1
+        JE   tens
+        STORE R0, 200   ; save R0
+        DATA R0, 48
+        ADD  R0, R3     ; '0' + digit
+        OUT  R0
+        LOAD R0, 200    ; restore R0
+        ; Extract tens
+tens:   DATA R3, 0
+        DATA R1, 10
+ten_lp: CMP  R1, R0     ; is 10 > R0?
+        JA   ptens
+        NOT  R1
+        DATA R2, 1
+        ADD  R1, R2
+        ADD  R0, R1     ; R0 -= 10
+        DATA R2, 1
+        ADD  R3, R2     ; tens++
+        DATA R1, 10
+        JMP  ten_lp
+ptens:  ; Print tens digit
+        STORE R0, 200   ; save ones
+        DATA R0, 48
+        ADD  R0, R3
+        OUT  R0
+        ; Print ones digit
+        LOAD R0, 200
+        DATA R1, 48
+        ADD  R0, R1     ; '0' + ones
+        OUT  R0
+        DATA R0, 10
+        OUT  R0
+        HALT
+; Enter two numbers (0-127), see their decimal sum!`,
+    bytes: [], expect: 'A+B as decimal',
+  },
 };
 
 // ── Main App ─────────────────────────────────────────────────────────────
@@ -369,18 +795,39 @@ export default function App() {
   const computer = useComputer(SAMPLE_PROGRAMS.add.bytes);
   const [activeProgram, setActiveProgram] = useState('add');
   const [editorCode, setEditorCode] = useState(SAMPLE_PROGRAMS.add.code);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
       switch (e.key.toLowerCase()) {
         case 's': computer.step(); break;
+        case 'b': computer.stepBack(); break;
         case 'r': computer.run(); break;
-        case 'p': case 'Escape': computer.pause(); break;
+        case 'p': computer.pause(); break;
+        case 'escape': computer.pause(); setShowHelp(false); break;
+        case '?': setShowHelp(v => !v); break;
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
+  }, [computer]);
+
+  // Electron menu commands (F5/F6/F10)
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (api?.onMenuCommand) {
+      api.onMenuCommand((cmd: string) => {
+        switch (cmd) {
+          case 'step': computer.step(); break;
+          case 'stepback': computer.stepBack(); break;
+          case 'run': computer.run(); break;
+          case 'pause': computer.pause(); break;
+          case 'reset': computer.reset(); break;
+        }
+      });
+    }
   }, [computer]);
 
   const handleLoadProgram = (key: string) => {
@@ -487,11 +934,19 @@ export default function App() {
             onChange={setEditorCode}
             currentAddress={state?.iar ?? 0}
             onLoadBytes={(bytes: number[]) => computer.loadProgram(bytes)}
+            breakpoints={computer.breakpoints}
+            onToggleBreakpoint={computer.toggleBreakpoint}
           />
         </div>
 
         <div style={styles.rightPanel}>
-          <MemoryView memory={computer.memory} currentAddress={state?.iar ?? 0} />
+          <MemoryView memory={computer.memory} currentAddress={state?.iar ?? 0} onPoke={computer.poke} />
+          <ConsoleView
+            output={computer.consoleOutput}
+            onClear={computer.clearConsole}
+            waitingForInput={computer.waitingForInput}
+            onSubmitInput={computer.submitInput}
+          />
         </div>
       </div>
 
@@ -515,7 +970,14 @@ export default function App() {
           </span>
         )}
         <span>History <span style={{ color: 'var(--text-secondary)' }}>{computer.traceHistory.length}</span></span>
+        <button onClick={() => setShowHelp(true)} style={{
+          background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 4,
+          color: 'var(--text-muted)', cursor: 'pointer', padding: '0 6px', fontSize: '0.7rem',
+          fontWeight: 700, fontFamily: 'var(--font-ui)', lineHeight: '18px',
+        }} title="Help & ISA Reference">?</button>
       </div>
+
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

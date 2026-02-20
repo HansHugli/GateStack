@@ -16,6 +16,13 @@ export default function AluView({ trace }: Props) {
   const alu = aluStep?.AluOperation;
   const active = !!alu;
 
+  // ALU polygon: left edge at x=70, top-left at y=20, bottom-left at y=80
+  // Input A connects at roughly y=35 (between y=20 and y=50 indent)
+  // Input B connects at roughly y=65 (between y=50 indent and y=80)
+  // The polygon notch is at (85,50), so wires should meet the left edge
+  // Left edge top segment: from (70,20) to (85,50) → at y=35, x ≈ 75.6
+  // Left edge bot segment: from (85,50) to (70,80) → at y=65, x ≈ 75.6
+
   return (
     <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
       <style>{ALU_STYLES}</style>
@@ -28,50 +35,49 @@ export default function AluView({ trace }: Props) {
         ALU
       </div>
 
-      {/* ALU SVG */}
       <svg viewBox="0 0 260 100" style={{ width: '100%', maxHeight: 100 }}>
-        {/* Input A wire */}
-        <line x1="0" y1="28" x2="65" y2="35"
-          stroke={active ? '#60a5fa' : '#1e2a42'} strokeWidth={active ? 2 : 1}
+        {/* Input A wire — connects to left edge of polygon at y=32 */}
+        <line x1="0" y1="30" x2="74" y2="32"
+          stroke={active ? '#93c5fd' : '#2a3a5c'} strokeWidth={active ? 2 : 1}
           strokeDasharray={active ? "6 3" : "none"}
           style={active ? { animation: 'wirePulse 0.4s linear infinite' } : {}} />
-        {/* Input B wire */}
-        <line x1="0" y1="72" x2="65" y2="65"
-          stroke={active ? '#60a5fa' : '#1e2a42'} strokeWidth={active ? 2 : 1}
+        {/* Input B wire — connects to left edge at y=68 */}
+        <line x1="0" y1="70" x2="74" y2="68"
+          stroke={active ? '#93c5fd' : '#2a3a5c'} strokeWidth={active ? 2 : 1}
           strokeDasharray={active ? "6 3" : "none"}
           style={active ? { animation: 'wirePulse 0.4s linear infinite' } : {}} />
 
-        {/* ALU shape */}
+        {/* ALU trapezoid shape */}
         <polygon points="70,20 160,42 160,58 70,80 85,50"
           fill={active ? '#2e1065' : '#111628'}
-          stroke={active ? '#7c3aed' : '#1e2a42'} strokeWidth={1.5}
+          stroke={active ? '#7c3aed' : '#2a3a5c'} strokeWidth={1.5}
           style={active ? { animation: 'aluPulse 0.6s ease infinite' } : {}} />
 
         {/* Operation label */}
-        <text x="105" y="54" textAnchor="middle" fill={active ? '#c4b5fd' : '#4a5568'}
+        <text x="108" y="54" textAnchor="middle" fill={active ? '#c4b5fd' : '#718096'}
           fontSize="12" fontWeight="700" fontFamily="var(--font-mono)">
           {active ? alu!.op : '—'}
         </text>
 
         {/* Output wire */}
         <line x1="160" y1="50" x2="260" y2="50"
-          stroke={active ? '#34d399' : '#1e2a42'} strokeWidth={active ? 2 : 1}
+          stroke={active ? '#6ee7b7' : '#2a3a5c'} strokeWidth={active ? 2 : 1}
           strokeDasharray={active ? "6 3" : "none"}
           style={active ? { animation: 'wirePulse 0.4s linear infinite' } : {}} />
 
-        {/* Input labels */}
+        {/* Input/output values */}
         {active && alu && (
           <>
-            <text x="4" y="25" fill="#93c5fd" fontSize="9" fontFamily="var(--font-mono)" fontWeight="600">
-              A: {hex(alu.input_a)}
+            <text x="4" y="24" fill="#93c5fd" fontSize="9" fontFamily="var(--font-mono)" fontWeight="600">
+              A: {hex(alu.input_a)} ({alu.input_a})
             </text>
-            <text x="4" y="80" fill="#93c5fd" fontSize="9" fontFamily="var(--font-mono)" fontWeight="600">
-              B: {hex(alu.input_b)}
+            <text x="4" y="86" fill="#93c5fd" fontSize="9" fontFamily="var(--font-mono)" fontWeight="600">
+              B: {hex(alu.input_b)} ({alu.input_b})
             </text>
-            <text x="180" y="45" fill="#6ee7b7" fontSize="9" fontFamily="var(--font-mono)" fontWeight="600">
-              = {hex(alu.result.value)}
+            <text x="175" y="44" fill="#6ee7b7" fontSize="9" fontFamily="var(--font-mono)" fontWeight="700">
+              = {hex(alu.result.value)} ({alu.result.value})
             </text>
-            <text x="180" y="58" fill="#4a5568" fontSize="7" fontFamily="var(--font-mono)">
+            <text x="175" y="58" fill="#718096" fontSize="7" fontFamily="var(--font-mono)">
               {bin(alu.result.value)}
             </text>
           </>
@@ -81,8 +87,8 @@ export default function AluView({ trace }: Props) {
       {/* Flags from ALU result */}
       {active && alu && (
         <div style={{
-          display: 'flex', gap: 6, marginTop: 4, fontSize: '0.6rem',
-          fontFamily: 'var(--font-mono)', color: 'var(--text-dim)',
+          display: 'flex', gap: 8, marginTop: 4, fontSize: '0.68rem',
+          fontFamily: 'var(--font-mono)', color: 'var(--text-muted)',
         }}>
           {alu.result.carry && <span style={{ color: 'var(--accent-amber)' }}>CARRY</span>}
           {alu.result.zero && <span style={{ color: 'var(--accent-cyan)' }}>ZERO</span>}
