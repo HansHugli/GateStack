@@ -61,17 +61,17 @@ export default function BusView({ state, trace }: Props) {
   if (!state) return null;
 
   const components = [
-    { id: 'IAR', x: 20, y: 18, color: '#f59e0b', value: state.iar },
-    { id: 'IR',  x: 95, y: 18, color: '#f59e0b', value: state.ir },
-    { id: 'R0',  x: 175, y: 18, color: '#3b82f6', value: state.r[0] },
-    { id: 'R1',  x: 245, y: 18, color: '#3b82f6', value: state.r[1] },
-    { id: 'R2',  x: 315, y: 18, color: '#3b82f6', value: state.r[2] },
-    { id: 'R3',  x: 385, y: 18, color: '#3b82f6', value: state.r[3] },
-    { id: 'MAR', x: 455, y: 18, color: '#ef4444', value: state.iar },
-    { id: 'ALU', x: 60,  y: 115, color: '#a855f7', value: state.acc },
-    { id: 'ACC', x: 160, y: 115, color: '#14b8a6', value: state.acc },
-    { id: 'TMP', x: 260, y: 115, color: '#64748b', value: state.tmp },
-    { id: 'RAM', x: 385, y: 115, color: '#ef4444', value: 0 },
+    { id: 'IAR', x: 20, y: 15, color: '#f59e0b', value: state.iar },
+    { id: 'IR',  x: 95, y: 15, color: '#f59e0b', value: state.ir },
+    { id: 'R0',  x: 175, y: 15, color: '#3b82f6', value: state.r[0] },
+    { id: 'R1',  x: 245, y: 15, color: '#3b82f6', value: state.r[1] },
+    { id: 'R2',  x: 315, y: 15, color: '#3b82f6', value: state.r[2] },
+    { id: 'R3',  x: 385, y: 15, color: '#3b82f6', value: state.r[3] },
+    { id: 'MAR', x: 455, y: 15, color: '#ef4444', value: state.iar },
+    { id: 'ALU', x: 60,  y: 175, color: '#a855f7', value: state.acc },
+    { id: 'ACC', x: 175, y: 175, color: '#14b8a6', value: state.acc },
+    { id: 'TMP', x: 290, y: 175, color: '#64748b', value: state.tmp },
+    { id: 'RAM', x: 420, y: 175, color: '#ef4444', value: 0 },
   ];
 
   const activeTransfers = useMemo(() => {
@@ -111,16 +111,16 @@ export default function BusView({ state, trace }: Props) {
       </div>
 
       <div style={{ position: 'relative' }}>
-        <svg viewBox="0 0 510 155" style={{ width: '100%', maxHeight: '155px' }}>
+        <svg viewBox="0 0 510 240" style={{ width: '100%', maxHeight: '240px' }}>
           {/* Main bus line */}
-          <rect x="8" y="66" width="494" height="8" rx="4"
+          <rect x="8" y="106" width="494" height="8" rx="4"
             fill="#1e293b" stroke="#334155" strokeWidth="0.5" />
           {activeTransfers.length > 0 && (
-            <rect x="8" y="66" width="494" height="8" rx="4"
+            <rect x="8" y="106" width="494" height="8" rx="4"
               fill="#ef4444" opacity="0.15"
               style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           )}
-          <text x="255" y="64" textAnchor="middle" fill="#8b95a8" fontSize="7">
+          <text x="255" y="103" textAnchor="middle" fill="#8b95a8" fontSize="8">
             BUS {hex(state.bus)} ({state.bus})
           </text>
 
@@ -129,18 +129,18 @@ export default function BusView({ state, trace }: Props) {
             const src = isSource(comp.id);
             const dst = isDest(comp.id);
             const active = src || dst;
-            const isTop = comp.y < 60;
-            const cx = comp.x + 25;
-            const busY = 70;
+            const isTop = comp.y < 100;
+            const cx = comp.x + 30;
+            const busY = 110;
 
             return (
               <g key={comp.id}>
                 {/* Connection line */}
                 <line
-                  x1={cx} y1={isTop ? comp.y + 32 : comp.y - 2}
+                  x1={cx} y1={isTop ? comp.y + 40 : comp.y - 2}
                   x2={cx} y2={busY}
                   stroke={active ? comp.color : '#1e293b'}
-                  strokeWidth={active ? 2.5 : 1}
+                  strokeWidth={active ? 2.5 : 1.5}
                   strokeDasharray={active ? '4 4' : 'none'}
                   opacity={active ? 1 : 0.3}
                   style={active ? {
@@ -149,17 +149,17 @@ export default function BusView({ state, trace }: Props) {
                 />
 
                 {src && (
-                  <circle cx={cx} cy={busY} r="3" fill={comp.color}
+                  <circle cx={cx} cy={busY} r="4" fill={comp.color}
                     style={{ animation: 'pulse 0.6s ease-in-out infinite' }} />
                 )}
                 {dst && (
-                  <circle cx={cx} cy={isTop ? comp.y + 32 : comp.y - 2} r="3" fill={comp.color}
+                  <circle cx={cx} cy={isTop ? comp.y + 40 : comp.y - 2} r="4" fill={comp.color}
                     style={{ animation: 'pulse 0.6s ease-in-out infinite' }} />
                 )}
 
                 {/* Visible component box */}
                 <rect
-                  x={comp.x} y={comp.y} width="50" height="30" rx="5"
+                  x={comp.x} y={comp.y} width="60" height="38" rx="6"
                   fill={active ? comp.color + '25' : '#111827'}
                   stroke={active ? comp.color : '#1e293b'}
                   strokeWidth={active ? 2 : 1}
@@ -168,7 +168,7 @@ export default function BusView({ state, trace }: Props) {
 
                 {/* Invisible expanded hit area for tooltip — 6px padding around box */}
                 <rect
-                  x={comp.x - 6} y={comp.y - 6} width={62} height={42} rx="8"
+                  x={comp.x - 6} y={comp.y - 6} width={72} height={50} rx="8"
                   fill="transparent"
                   style={{ cursor: 'help' }}
                   onMouseEnter={(e) => handleMouseEnter(e, comp.id)}
@@ -177,16 +177,16 @@ export default function BusView({ state, trace }: Props) {
                 />
 
                 {/* Label */}
-                <text x={cx} y={comp.y + 13} textAnchor="middle"
+                <text x={cx} y={comp.y + 15} textAnchor="middle"
                   fill={active ? '#fff' : '#8b95a8'}
-                  fontSize="9" fontWeight="bold" pointerEvents="none">
+                  fontSize="11" fontWeight="bold" pointerEvents="none">
                   {comp.id}
                 </text>
 
                 {/* Value */}
-                <text x={cx} y={comp.y + 24} textAnchor="middle"
+                <text x={cx} y={comp.y + 30} textAnchor="middle"
                   fill={active ? comp.color : '#718096'}
-                  fontSize="7" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
+                  fontSize="9" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
                   {hex(comp.value)} ({comp.value})
                 </text>
               </g>
@@ -201,7 +201,7 @@ export default function BusView({ state, trace }: Props) {
                   : 'Reg' in t.source ? t.source.Reg
                   : 'Immediate' in t.source ? `#${t.source.Immediate}` : '?';
                 return (
-                  <text key={i} x="255" y="148" textAnchor="middle"
+                  <text key={i} x="255" y="228" textAnchor="middle"
                     fill="#94a3b8" fontSize="9" fontFamily="monospace">
                     {srcName} → {t.dest} [{hex(t.value)} = {t.value}]
                   </text>
