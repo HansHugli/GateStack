@@ -24,11 +24,13 @@ const REGIONS = [
 
 const toAscii = (b: number) => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '·';
 
-function EditCell({ addr, value, onCommit, onCancel }: {
+function EditCell(props: {
   addr: number; value: number;
   onCommit: (addr: number, value: number) => void;
   onCancel: () => void;
+  [k: string]: any;
 }) {
+  const { addr, value, onCommit, onCancel } = props;
   const inputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(hex8(value));
 
@@ -231,9 +233,8 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
 
 /* ── Sub-components ── */
 
-function NavBtn({ onClick, disabled, children }: {
-  onClick: () => void; disabled: boolean; children: React.ReactNode;
-}) {
+function NavBtn(props: { onClick: () => void; disabled: boolean; children: any }) {
+  const { onClick, disabled, children } = props;
   return (
     <button onClick={onClick} disabled={disabled} style={{
       fontSize: '0.6rem', padding: '2px 5px', borderRadius: 3,
@@ -248,9 +249,8 @@ function NavBtn({ onClick, disabled, children }: {
   );
 }
 
-function RegionBtn({ active, color, onClick, children }: {
-  active: boolean; color: string; onClick: () => void; children: React.ReactNode;
-}) {
+function RegionBtn(props: { active: boolean; color: string; onClick: () => void; children: any; [k: string]: any }) {
+  const { active, color, onClick, children } = props;
   return (
     <button onClick={onClick} style={{
       fontSize: '0.5rem', fontWeight: 600,

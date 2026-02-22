@@ -303,7 +303,7 @@ export function disassemble(memory: number[], startAddr: number, length: number)
       continue;
     }
 
-    const name = OP[opcode as keyof typeof OP] ? Object.entries(OP).find(([, v]) => v === opcode)?.[0] ?? '???' : '???';
+    const name = Object.entries(OP).find(([, v]) => v === opcode)?.[0] ?? '???';
     const size = instrSize(opcode);
 
     if (pc + size > end) break;

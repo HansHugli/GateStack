@@ -15,6 +15,7 @@ export interface ComputerHook {
   // State
   state: CpuState | null;
   memory: number[];
+  memoryVersion: number;
   trace: CycleTrace | null;
   traceHistory: CpuState[];
   isRunning: boolean;

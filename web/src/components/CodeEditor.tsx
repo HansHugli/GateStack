@@ -615,7 +615,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                   marginBottom: '6px', paddingBottom: '6px',
                   borderBottom: '1px solid #1e293b',
                 }}>
-                  {Array.from(lastResult.labels?.entries() ?? []).map(([name, addr]) => (
+                  {Array.from(lastResult.labels?.entries() ?? []).map((entry: any) => { const [name, addr] = entry; return (
                     <span key={name} style={{
                       fontSize: '0.65rem', fontFamily: FONT_FAMILY,
                       padding: '1px 6px', background: '#1e293b', borderRadius: '3px',
@@ -624,7 +624,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                       <span style={{ color: '#475569' }}> = </span>
                       <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(4, '0').toUpperCase()} ({addr})</span>
                     </span>
-                  ))}
+                  ); })}
                 </div>
               )}
 

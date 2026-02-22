@@ -400,7 +400,7 @@ class MockComputer implements IComputer {
     return Array.from(this.memory.slice(0, MEM_SIZE));
   }
   getRawMemory(): number[] {
-    return this.memory;
+    return this.memory as unknown as number[];
   }
   reset(): void {
     this.state = {
