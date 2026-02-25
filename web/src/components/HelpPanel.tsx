@@ -145,6 +145,23 @@ export default function HelpPanel({ onClose }: Props) {
             </ul>
           </div>
         </div>
+
+        {/* Attribution */}
+        <div style={{
+          marginTop: 16, paddingTop: 12,
+          borderTop: '1px solid var(--border-subtle)',
+          fontSize: '0.68rem', color: 'var(--text-dim)', lineHeight: 1.7,
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' as const, fontSize: '0.6rem' }}>
+            Inspired by
+          </span>
+          <div style={{ marginTop: 4 }}>
+            <span style={{ color: 'var(--text-secondary)' }}>J. Clark Scott</span> — <em>But How Do It Know?</em>, a first-principles explanation of how a simple computer works from logic gates up.
+          </div>
+          <div style={{ marginTop: 2 }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Noam Nisan &amp; Shimon Schocken</span> — <em>nand2tetris.org</em>, building a modern computer system from NAND gates through a complete software stack.
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -54,11 +54,12 @@
 
 ## Video Display
 
-- **Resolution**: 32×32 pixels, 4 colors, 2 bits per pixel (packed)
+- **Resolution**: 64×64 pixels, 4 colors, 2 bits per pixel (packed)
 - **Pixel format**: 4 pixels per byte, MSB first (bits 7-6 = pixel 0)
-- **Video RAM**: 256 bytes at 0xA000–0xA0FF
+- **Double buffer**: Page 0 at 0xA000–0xA3FF, Page 1 at 0xA400–0xA7FF (1024 bytes each)
+- **PAGE_SELECT**: Write 0 or 1 to address 0xDFFF to swap the display page
 - **Colors**: 0 = off, 1 = dim, 2 = mid, 3 = bright
-- **Rendering**: Real-time — write directly to video RAM, display updates live
+- **Rendering**: Draw to back page, then flip PAGE_SELECT for tear-free animation
 
 ## Assembly Syntax
 

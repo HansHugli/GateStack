@@ -130,61 +130,42 @@ const styles: Record<string, React.CSSProperties> = {
 
 // ── Bouncing Ball Video Generator ────────────────────────────────────────
 function generateBouncingBall(): string {
-  return `; Bouncing Ball — Double-buffered, tear-free
-; Page 0 at 0xA000, Page 1 at 0xA100
+  return `; Bouncing Ball — 64×64 Double-buffered, tear-free
+; Page 0 at 0xA000 (1024 bytes), Page 1 at 0xA400 (1024 bytes)
 ; PAGE_SELECT at 0xDFFF = which page to DISPLAY
-; Program draws on back page, then flips
+; Each frame: clear back page → draw border → draw ball → flip
 ;
 ; R4=ballX  R5=ballY  R6=dx  R7=dy
-; R8=prevX  R9=prevY
-; R10=loop  R11=temp  R12=draw base (back page)
-; R13=const32  R14=const1  R15=const0
-;
-; Hit Run at any speed!
+; R10=loop  R11=temp  R12=back page base
+; R13=const64  R14=const1  R15=const0
 
 ; ── Init constants ──
-        DATA R4, 20       ; ballX
-        DATA R5, 3        ; ballY
-        DATA R6, 1        ; dx
-        DATA R7, 1        ; dy
-        DATA R8, 20       ; prevX
-        DATA R9, 3        ; prevY
-        DATA R13, 32
+        DATA R4, 20
+        DATA R5, 3
+        DATA R6, 1
+        DATA R7, 1
+        DATA R13, 64
         DATA R14, 1
         DATA R15, 0
 
-; ── Draw border on BOTH pages ──
+; ── Draw first frame on page 0, display it ──
         DATA R12, 0xA000
         CALL draw_border
-        DATA R12, 0xA100
-        CALL draw_border
-
-; ── Draw initial ball on page 0 ──
-        DATA R12, 0xA000
         CALL draw_ball
-
-; ── Display page 0 ──
         DATA R0, 0
         STORE R0, 0xDFFF
 
 ; ══════════════════════════════════════
 ; ── MAIN LOOP ──
 frame:
-        ; Save prev position
-        DATA R8, 0
-        ADD  R8, R4
-        DATA R9, 0
-        ADD  R9, R5
-
         ; Move ball
         ADD  R4, R6
         ADD  R5, R7
-
         ; Bounce X
         CMP  R4, R14
         JA   cx_hi
         JMP  flip_x
-cx_hi:  DATA R11, 28
+cx_hi:  DATA R11, 60
         CMP  R4, R11
         JA   flip_x
         JMP  chk_y
@@ -197,7 +178,7 @@ flip_x: DATA R11, 0
 chk_y:  CMP  R5, R14
         JA   cy_hi
         JMP  flip_y
-cy_hi:  DATA R11, 28
+cy_hi:  DATA R11, 60
         CMP  R5, R11
         JA   flip_y
         JMP  do_draw
@@ -209,125 +190,105 @@ flip_y: DATA R11, 0
         ADD  R5, R7
 
 do_draw:
-        ; Determine front/back pages
+        ; Pick back page (opposite of display)
         LOAD R0, 0xDFFF
         CMP  R0, R15
-        JE   use_pg1
-        ; Display=1(front), Back=0
+        JE   back1
         DATA R12, 0xA000
-        DATA R0, 0xA100
-        JMP  do_copy
-use_pg1:
-        ; Display=0(front), Back=1
-        DATA R12, 0xA100
-        DATA R0, 0xA000
+        JMP  do_clr
+back1:  DATA R12, 0xA400
 
-do_copy:
-        ; Copy 256 bytes: front(R0) → back(R12) using LDRI/STRI
-        PUSH R2
-        PUSH R3
+do_clr:
+        ; Clear 1024 bytes of back page
         PUSH R8
-        PUSH R9
+        DATA R8, 0
+        ADD  R8, R12
         DATA R10, 0
-cloop:  DATA R11, 0
-        ADD  R11, R0
-        ADD  R11, R10
-        LDRI R2, R11
-        DATA R11, 0
-        ADD  R11, R12
-        ADD  R11, R10
-        STRI R2, R11
+clr:    STRI R15, R8
+        ADD  R8, R14
         ADD  R10, R14
-        DATA R11, 256
+        DATA R11, 1024
         CMP  R10, R11
-        JE   cdone
-        JMP  cloop
-cdone:  POP  R9
+        JE   clr_done
+        JMP  clr
+clr_done:
         POP  R8
-        POP  R3
-        POP  R2
 
-        ; Erase old ball on back page
-        CALL erase_ball
-        ; Draw new ball on back page
+        ; Draw border + ball on back page
+        CALL draw_border
         CALL draw_ball
 
-        ; Flip: swap display page
+        ; Flip display
         LOAD R0, 0xDFFF
         CMP  R0, R15
-        JE   set_pg1
+        JE   show1
         DATA R0, 0
         STORE R0, 0xDFFF
         JMP  frame
-set_pg1:
-        DATA R0, 1
+show1:  DATA R0, 1
         STORE R0, 0xDFFF
         JMP  frame
 
 ; ══════════════════════════════════════
-; ── draw_border: draw border on page R12 ──
+; ── draw_border on R12 ──
 draw_border:
         PUSH R10
+        ; Top row (row 0, cols 0..63)
         DATA R10, 0
-db_top: DATA R0, 1
+bt:     DATA R0, 1
         DATA R1, 0
         DATA R2, 0
         ADD  R2, R10
         CALL set_pixel
         ADD  R10, R14
         CMP  R10, R13
-        JE   db_bot_init
-        JMP  db_top
-db_bot_init:
-        DATA R10, 0
-db_bot: DATA R0, 1
-        DATA R1, 31
+        JE   bbi
+        JMP  bt
+        ; Bottom row (row 63, cols 0..63)
+bbi:    DATA R10, 0
+bb:     DATA R0, 1
+        DATA R1, 63
         DATA R2, 0
         ADD  R2, R10
         CALL set_pixel
         ADD  R10, R14
         CMP  R10, R13
-        JE   db_left_init
-        JMP  db_bot
-db_left_init:
-        DATA R10, 1
-db_left:
-        DATA R0, 1
+        JE   bli
+        JMP  bb
+        ; Left col (col 0, rows 1..62)
+bli:    DATA R10, 1
+bl:     DATA R0, 1
         DATA R1, 0
         ADD  R1, R10
         DATA R2, 0
         CALL set_pixel
         ADD  R10, R14
-        DATA R11, 31
+        DATA R11, 63
         CMP  R10, R11
-        JE   db_right_init
-        JMP  db_left
-db_right_init:
-        DATA R10, 1
-db_right:
-        DATA R0, 1
+        JE   bri
+        JMP  bl
+        ; Right col (col 63, rows 1..62)
+bri:    DATA R10, 1
+br:     DATA R0, 1
         DATA R1, 0
         ADD  R1, R10
-        DATA R2, 31
+        DATA R2, 63
         CALL set_pixel
         ADD  R10, R14
-        DATA R11, 31
+        DATA R11, 63
         CMP  R10, R11
-        JE   db_done
-        JMP  db_right
-db_done:
-        POP  R10
+        JE   bdn
+        JMP  br
+bdn:    POP  R10
         RET
 
-; ── draw_ball: draw 3×3 bright at (R4,R5) on page R12 ──
+; ── draw_ball: 3×3 bright at (R4,R5) on R12 ──
 draw_ball:
         PUSH R3
         PUSH R10
         DATA R3, 0
-dball_r:
-        DATA R10, 0
-dball_c:
-        DATA R0, 3
+dr:     DATA R10, 0
+dc:     DATA R0, 3
         DATA R1, 0
         ADD  R1, R5
         ADD  R1, R3
@@ -338,53 +299,21 @@ dball_c:
         ADD  R10, R14
         DATA R11, 3
         CMP  R10, R11
-        JE   dball_nr
-        JMP  dball_c
-dball_nr:
-        ADD  R3, R14
+        JE   dnr
+        JMP  dc
+dnr:    ADD  R3, R14
         DATA R11, 3
         CMP  R3, R11
-        JE   dball_done
-        JMP  dball_r
-dball_done:
-        POP  R10
-        POP  R3
-        RET
-
-; ── erase_ball: clear 3×3 at (R8,R9) on page R12 ──
-erase_ball:
-        PUSH R3
-        PUSH R10
-        DATA R3, 0
-eball_r:
-        DATA R10, 0
-eball_c:
-        DATA R0, 0
-        DATA R1, 0
-        ADD  R1, R9
-        ADD  R1, R3
-        DATA R2, 0
-        ADD  R2, R8
-        ADD  R2, R10
-        CALL set_pixel
-        ADD  R10, R14
-        DATA R11, 3
-        CMP  R10, R11
-        JE   eball_nr
-        JMP  eball_c
-eball_nr:
-        ADD  R3, R14
-        DATA R11, 3
-        CMP  R3, R11
-        JE   eball_done
-        JMP  eball_r
-eball_done:
-        POP  R10
+        JE   ddn
+        JMP  dr
+ddn:    POP  R10
         POP  R3
         RET
 
 ; ══════════════════════════════════════
-; ── set_pixel: R0=color R1=row R2=col R12=page base ──
+; ── set_pixel: R0=color R1=row R2=col R12=page ──
+; pixel index = row*64 + col
+; byte offset = index / 4, bit pos = (3 - index%4) * 2
 set_pixel:
         PUSH R0
         PUSH R1
@@ -409,36 +338,35 @@ set_pixel:
         DATA R1, 0
         ADD  R1, R0
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
         SUB  R3, R14
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
         SUB  R3, R14
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
         SUB  R3, R14
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
         SUB  R3, R14
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
         SUB  R3, R14
         CMP  R3, R15
-        JE   sp_apply
+        JE   sp_ok
         SHL  R1
         SHL  R2
-sp_apply:
-        NOT  R2
+sp_ok:  NOT  R2
         AND  R11, R2
         OR   R11, R1
         DATA R2, 0xFF

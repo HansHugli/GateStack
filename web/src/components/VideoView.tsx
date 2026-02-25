@@ -6,11 +6,11 @@ interface Props {
   isRunning: boolean;
 }
 
-const GRID = 32;
-const PIXELS = GRID * GRID;
-const BYTES_PER_FRAME = PIXELS / 4;  // 256 bytes, 2bpp packed
+const GRID = 64;
+const PIXELS = GRID * GRID;                 // 4096
+const BYTES_PER_FRAME = PIXELS / 4;         // 1024 bytes, 2bpp packed
 
-// Double buffer: page 0 at 0xA000, page 1 at 0xA100
+// Double buffer: page 0 at 0xA000, page 1 at 0xA400
 // PAGE_SELECT (0xDFFF) tells which page to DISPLAY
 const VIDEO_BASE = 0xA000;
 const PAGE_SELECT = 0xDFFF;
@@ -24,23 +24,19 @@ const PALETTE = [
 
 export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number | null>(null);
 
-  // Check which page to display from PAGE_SELECT register
   const displayPage = (memory[PAGE_SELECT] ?? 0) & 1;
   const displayBase = VIDEO_BASE + displayPage * BYTES_PER_FRAME;
 
-  // Check if video RAM has any content
   const hasContent = memory.slice(VIDEO_BASE, VIDEO_BASE + BYTES_PER_FRAME * 2).some(v => v !== 0);
 
-  // Render function
   const render = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const cellSize = 5;
+    const cellSize = 4;
     canvas.width = GRID * cellSize;
     canvas.height = GRID * cellSize;
 
@@ -56,7 +52,6 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
     }
   };
 
-  // Render on memory change (triggered by version bump)
   useEffect(() => {
     render();
   }, [memoryVersion]);
@@ -81,7 +76,7 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
             fontSize: '0.58rem', color: 'var(--text-dim)', fontWeight: 400,
             fontFamily: 'var(--font-mono)',
           }}>
-            32×32 · 2bpp{isRunning ? ' · live' : ''}
+            64×64 · 2bpp{isRunning ? ' · live' : ''}
           </span>
         </div>
 
@@ -101,7 +96,7 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
         <canvas
           ref={canvasRef}
           style={{
-            width: 160, height: 160,
+            width: 256, height: 256,
             border: `1px solid ${isRunning && hasContent ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
             borderRadius: 'var(--radius-sm)',
             imageRendering: 'pixelated',

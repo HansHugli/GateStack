@@ -100,7 +100,7 @@ function buildMenu() {
               type: 'info',
               title: 'About GateStack',
               message: `GateStack v${version}`,
-              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 8-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by Ben Eater\'s breadboard computer.`,
+              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 16-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by J. Clark Scott's "But How Do It Know?"\nand nand2tetris.org by Nisan & Schocken.`,
             });
           },
         },

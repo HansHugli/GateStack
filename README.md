@@ -201,6 +201,14 @@ gatestack/
 | `Clock`             | `requestAnimationFrame`      | UI-driven timing               |
 | `Bus8_1`            | Variable assignment           | `bus = value`                  |
 
+## Inspired By
+
+GateStack stands on the shoulders of two outstanding educational works:
+
+- **J. Clark Scott** — *[But How Do It Know?](http://www.buthowdoitknow.com/)* — A beautifully clear, first-principles explanation of how a simple computer works, building from NAND gates through registers, RAM, ALU, and a control unit. GateStack's architecture and instruction set draw directly from Scott's design.
+
+- **Noam Nisan & Shimon Schocken** — *[nand2tetris.org](https://www.nand2tetris.org/)* — The landmark course and textbook (*The Elements of Computing Systems*) that guides you through building a complete computer system from NAND gates to a high-level language. Its philosophy of learning by building deeply influenced GateStack's hands-on, visual approach.
+
 ## License
 
 MIT
