@@ -16,10 +16,8 @@ const ROWS = PAGE_SIZE / COLS;
 
 const REGIONS = [
   { label: 'Code',  page: 0, color: '#3b82f6' },
-  { label: 'Stack', page: Math.floor(0x9F00 / PAGE_SIZE), color: '#a855f7' },
-  { label: 'Vid 0', page: Math.floor(0xA000 / PAGE_SIZE), color: '#a855f7' },
-  { label: 'Vid 1', page: Math.floor(0xA400 / PAGE_SIZE), color: '#a855f7' },
-  { label: 'PgSel', page: Math.floor(0xDF00 / PAGE_SIZE), color: '#ef4444' },
+  { label: 'Stack', page: Math.floor(0x7F00 / PAGE_SIZE), color: '#a855f7' },
+  { label: 'Video', page: Math.floor(0x8000 / PAGE_SIZE), color: '#a855f7' },
 ];
 
 const toAscii = (b: number) => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '·';

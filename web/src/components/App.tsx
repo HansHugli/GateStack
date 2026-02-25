@@ -130,35 +130,33 @@ const styles: Record<string, React.CSSProperties> = {
 
 // ── Bouncing Ball Video Generator ────────────────────────────────────────
 function generateBouncingBall(): string {
-  return `; Bouncing Ball — 64×64 Double-buffered, tear-free
-; Page 0 at 0xA000 (1024 bytes), Page 1 at 0xA400 (1024 bytes)
-; PAGE_SELECT at 0xDFFF = which page to DISPLAY
-; Each frame: clear back page → draw border → draw ball → flip
+  return `; Bouncing Ball — 4bpp, 256×256 framebuffer
+; Ball in 64×64 area at rows 0-63, cols 0-63
+; Video RAM at 0x8000, 128 bytes/row (256px, 4bpp)
+; 4bpp: high nibble = even col, low nibble = odd col
 ;
 ; R4=ballX  R5=ballY  R6=dx  R7=dy
-; R10=loop  R11=temp  R12=back page base
-; R13=const64  R14=const1  R15=const0
+; R12=0x8000  R13=128  R14=1  R15=0
 
-; ── Init constants ──
+; ── Init ──
         DATA R4, 20
         DATA R5, 3
         DATA R6, 1
         DATA R7, 1
-        DATA R13, 64
+        DATA R12, 0x8000
+        DATA R13, 128
         DATA R14, 1
         DATA R15, 0
 
-; ── Draw first frame on page 0, display it ──
-        DATA R12, 0xA000
+; ── Draw initial frame ──
+        CALL clear_area
         CALL draw_border
         CALL draw_ball
         DATA R0, 0
         STORE R0, 0xDFFF
 
-; ══════════════════════════════════════
 ; ── MAIN LOOP ──
 frame:
-        ; Move ball
         ADD  R4, R6
         ADD  R5, R7
         ; Bounce X
@@ -190,74 +188,68 @@ flip_y: DATA R11, 0
         ADD  R5, R7
 
 do_draw:
-        ; Pick back page (opposite of display)
-        LOAD R0, 0xDFFF
-        CMP  R0, R15
-        JE   back1
-        DATA R12, 0xA000
-        JMP  do_clr
-back1:  DATA R12, 0xA400
-
-do_clr:
-        ; Clear 1024 bytes of back page
-        PUSH R8
-        DATA R8, 0
-        ADD  R8, R12
-        DATA R10, 0
-clr:    STRI R15, R8
-        ADD  R8, R14
-        ADD  R10, R14
-        DATA R11, 1024
-        CMP  R10, R11
-        JE   clr_done
-        JMP  clr
-clr_done:
-        POP  R8
-
-        ; Draw border + ball on back page
+        CALL clear_area
         CALL draw_border
         CALL draw_ball
-
-        ; Flip display
-        LOAD R0, 0xDFFF
-        CMP  R0, R15
-        JE   show1
         DATA R0, 0
         STORE R0, 0xDFFF
         JMP  frame
-show1:  DATA R0, 1
-        STORE R0, 0xDFFF
-        JMP  frame
 
-; ══════════════════════════════════════
-; ── draw_border on R12 ──
+; ── clear_area: zero 64 rows × 32 bytes ──
+clear_area:
+        PUSH R8
+        PUSH R9
+        PUSH R10
+        DATA R8, 0
+ca_row: DATA R9, 0
+        ADD  R9, R8
+        MUL  R9, R13
+        ADD  R9, R12
+        DATA R10, 0
+ca_col: STRI R15, R9
+        ADD  R9, R14
+        ADD  R10, R14
+        DATA R11, 32
+        CMP  R10, R11
+        JE   ca_nr
+        JMP  ca_col
+ca_nr:  ADD  R8, R14
+        DATA R11, 64
+        CMP  R8, R11
+        JE   ca_dn
+        JMP  ca_row
+ca_dn:  POP  R10
+        POP  R9
+        POP  R8
+        RET
+
+; ── draw_border: color 5 (teal) ──
 draw_border:
         PUSH R10
-        ; Top row (row 0, cols 0..63)
         DATA R10, 0
-bt:     DATA R0, 1
+bt:     DATA R0, 5
         DATA R1, 0
         DATA R2, 0
         ADD  R2, R10
         CALL set_pixel
         ADD  R10, R14
-        CMP  R10, R13
-        JE   bbi
+        DATA R11, 64
+        CMP  R10, R11
+        JE   bb_i
         JMP  bt
-        ; Bottom row (row 63, cols 0..63)
-bbi:    DATA R10, 0
-bb:     DATA R0, 1
+bb_i:   DATA R10, 0
+bb:     DATA R0, 5
         DATA R1, 63
         DATA R2, 0
         ADD  R2, R10
         CALL set_pixel
         ADD  R10, R14
-        CMP  R10, R13
-        JE   bli
+        DATA R11, 64
+        CMP  R10, R11
+        JE   bl_i
         JMP  bb
-        ; Left col (col 0, rows 1..62)
-bli:    DATA R10, 1
-bl:     DATA R0, 1
+bl_i:   DATA R10, 1
+bl:     DATA R0, 5
         DATA R1, 0
         ADD  R1, R10
         DATA R2, 0
@@ -265,11 +257,10 @@ bl:     DATA R0, 1
         ADD  R10, R14
         DATA R11, 63
         CMP  R10, R11
-        JE   bri
+        JE   br_i
         JMP  bl
-        ; Right col (col 63, rows 1..62)
-bri:    DATA R10, 1
-br:     DATA R0, 1
+br_i:   DATA R10, 1
+br:     DATA R0, 5
         DATA R1, 0
         ADD  R1, R10
         DATA R2, 63
@@ -282,13 +273,13 @@ br:     DATA R0, 1
 bdn:    POP  R10
         RET
 
-; ── draw_ball: 3×3 bright at (R4,R5) on R12 ──
+; ── draw_ball: 3×3 color 9 (yellow) ──
 draw_ball:
         PUSH R3
         PUSH R10
         DATA R3, 0
 dr:     DATA R10, 0
-dc:     DATA R0, 3
+dc:     DATA R0, 9
         DATA R1, 0
         ADD  R1, R5
         ADD  R1, R3
@@ -310,10 +301,9 @@ ddn:    POP  R10
         POP  R3
         RET
 
-; ══════════════════════════════════════
-; ── set_pixel: R0=color R1=row R2=col R12=page ──
-; pixel index = row*64 + col
-; byte offset = index / 4, bit pos = (3 - index%4) * 2
+; ── set_pixel: R0=color(0-15) R1=row R2=col ──
+; byte = 0x8000 + row*128 + col/2
+; even col = high nibble, odd col = low nibble
 set_pixel:
         PUSH R0
         PUSH R1
@@ -322,56 +312,38 @@ set_pixel:
         PUSH R9
         PUSH R11
         MUL  R1, R13
-        ADD  R1, R2
         DATA R9, 0
-        ADD  R9, R1
-        DATA R11, 4
-        DIV  R9, R11
-        ADD  R9, R12
-        MOD  R1, R11
-        DATA R3, 3
-        SUB  R3, R1
+        ADD  R9, R2
         DATA R11, 2
-        MUL  R3, R11
-        LDRI R11, R9
-        DATA R2, 3
-        DATA R1, 0
-        ADD  R1, R0
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-        SUB  R3, R14
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-        SUB  R3, R14
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-        SUB  R3, R14
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-        SUB  R3, R14
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-        SUB  R3, R14
-        CMP  R3, R15
-        JE   sp_ok
-        SHL  R1
-        SHL  R2
-sp_ok:  NOT  R2
-        AND  R11, R2
-        OR   R11, R1
-        DATA R2, 0xFF
-        AND  R11, R2
-        STRI R11, R9
+        DIV  R9, R11
+        ADD  R1, R9
+        ADD  R1, R12
+        LDRI R11, R1
+        DATA R9, 0
+        ADD  R9, R2
+        DATA R3, 2
+        MOD  R9, R3
+        CMP  R9, R15
+        JE   sp_even
+        ; Odd col: low nibble
+        DATA R3, 0xF0
+        AND  R11, R3
+        DATA R3, 0x0F
+        AND  R0, R3
+        OR   R11, R0
+        JMP  sp_wr
+sp_even:
+        ; Even col: high nibble
+        DATA R3, 0x0F
+        AND  R11, R3
+        DATA R3, 0x0F
+        AND  R0, R3
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        OR   R11, R0
+sp_wr:  STRI R11, R1
         POP  R11
         POP  R9
         POP  R3
@@ -380,6 +352,17 @@ sp_ok:  NOT  R2
         POP  R0
         RET`;
 }
+
+// ── Mandelbrot assembly is inlined in SAMPLE_PROGRAMS below ──────────────
+// Uses signed 8.8 fixed-point: 1.0 = 256, -2.0 = 65024 (0xFE00 unsigned)
+// MULH instruction gives high 16 bits of 32-bit unsigned multiply
+// Pre-computed constants:
+//   RE_MIN  = (-2.0  × 256) & 0xFFFF = 65024   (0xFE00)
+//   RE_STEP = round(2.7/256 × 256)   = 3
+//   IM_MIN  = (-1.35 × 256) & 0xFFFF = 65191   (0xFEA7)
+//   IM_STEP = round(2.7/256 × 256)   = 3
+//   ESCAPE  = 4.0 × 256              = 1024
+//   MAX_ITER                          = 16
 
 const SAMPLE_PROGRAMS: Record<string, { name: string; desc: string; code: string; bytes: number[]; expect: string }> = {
   add: {
@@ -988,6 +971,206 @@ pd_s:   DATA R3, 1
     code: generateBouncingBall(),
     bytes: [], expect: 'Real-time bouncing ball',
   },
+  mandelbrot: {
+    name: 'Mandelbrot', desc: 'Fractal (256×256)',
+    code: `; Mandelbrot Set — 256x256, 4bpp, 8.8 fixed-point
+; Video RAM at 0x8000, 128 bytes/row
+; Uses MULH for 32-bit multiply (signed 8.8 fixed-point)
+; Uses MOV, SHR8, SHL8 for fast register copy & barrel shift
+; Set speed to max (1M) and wait — renders progressively!
+;
+; 8.8 fixed-point constants (1.0 = 256):
+;   RE_MIN  = -2.0  -> 65024 (0xFE00)    IM_MIN  = -1.35 -> 65191 (0xFEA7)
+;   RE_STEP = 3     (2.7/256 in 8.8)     IM_STEP = 3
+;   ESCAPE  = 1024  (4.0 in 8.8)         MAX_ITER = 16
+;
+; Registers:
+;   R4=px  R5=py  R6=cr  R7=ci
+;   R8=zr  R9=zi  R10=iter  R11=scratch
+;   R12=0x8000  R13=128  R14=1  R15=0
+
+; -- Constants --
+        DATA R12, 0x8000    ; video base
+        DATA R13, 128       ; row stride
+        DATA R14, 1
+        DATA R15, 0
+
+; -- Outer loops: py (R5) and px (R4) --
+        DATA R5, 0          ; py = 0
+        DATA R7, 65191      ; ci starts at im_min (-1.35)
+
+yloop:  DATA R4, 0          ; px = 0
+        DATA R6, 65024      ; cr starts at re_min (-2.0)
+
+xloop:
+        ; -- Init z = 0 --
+        DATA R8, 0           ; zr = 0
+        DATA R9, 0           ; zi = 0
+        DATA R10, 0          ; iter = 0
+
+iter_loop:
+        ; zr^2 = fpmul(zr, zr)
+        MOV  R0, R8
+        MOV  R1, R8
+        CALL fpmul           ; R0 = zr^2
+        MOV  R2, R0          ; R2 = zr^2
+
+        ; zi^2 = fpmul(zi, zi)
+        MOV  R0, R9
+        MOV  R1, R9
+        CALL fpmul           ; R0 = zi^2
+        MOV  R3, R0          ; R3 = zi^2
+
+        ; Check escape: zr^2 + zi^2 > escape?
+        ADD  R0, R2          ; R0 = zr^2 + zi^2
+        DATA R11, 1024       ; escape threshold (4.0)
+        CMP  R0, R11
+        JA   escaped
+
+        ; Max iterations check
+        ADD  R10, R14
+        DATA R11, 16         ; max iterations
+        CMP  R10, R11
+        JE   inside
+
+        ; -- Compute new_zi = 2 * zr * zi + ci --
+        MOV  R0, R8          ; R0 = zr
+        MOV  R1, R9          ; R1 = zi
+        CALL fpmul           ; R0 = zr*zi
+        SHL  R0              ; 2*zr*zi
+        ADD  R0, R7          ; + ci = new_zi
+
+        ; -- Compute new_zr = zr^2 - zi^2 + cr --
+        SUB  R2, R3          ; R2 = zr^2 - zi^2
+        ADD  R2, R6          ; + cr = new_zr
+
+        ; Set new values
+        MOV  R8, R2          ; zr = new_zr
+        MOV  R9, R0          ; zi = new_zi
+
+        JMP  iter_loop
+
+escaped:
+        ; Color = (iter % 15) + 1
+        MOV  R0, R10
+        DATA R1, 15
+        MOD  R0, R1
+        ADD  R0, R14
+        JMP  plot
+
+inside:
+        DATA R0, 0           ; color 0 = inside set
+
+plot:
+        ; Write pixel at (R5=row, R4=col) with color R0
+        ; byte addr = 0x8000 + row*128 + col/2
+        PUSH R0              ; save color
+        MOV  R1, R5
+        MUL  R1, R13         ; row * 128
+        MOV  R3, R4
+        SHR  R3              ; col / 2 (bit shift)
+        ADD  R1, R3
+        ADD  R1, R12         ; byte addr in R1
+        ; Read current byte
+        LDRI R11, R1
+        ; Even or odd col?
+        MOV  R3, R4
+        AND  R3, R14         ; col & 1
+        POP  R0              ; restore color
+        CMP  R3, R15
+        JE   px_even
+        ; Odd col: low nibble
+        DATA R3, 0xF0
+        AND  R11, R3
+        DATA R3, 0x0F
+        AND  R0, R3
+        OR   R11, R0
+        JMP  px_wr
+px_even:
+        ; Even col: high nibble
+        DATA R3, 0x0F
+        AND  R11, R3
+        AND  R0, R3          ; mask to 4 bits
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        OR   R11, R0
+px_wr:  STRI R11, R1
+
+        ; Next pixel: px++, cr += re_step
+        ADD  R4, R14
+        DATA R11, 3           ; re_step
+        ADD  R6, R11
+        DATA R11, 256
+        CMP  R4, R11
+        JE   next_row
+        JMP  xloop
+
+next_row:
+        ; py++, ci += im_step
+        ADD  R5, R14
+        DATA R11, 3           ; im_step
+        ADD  R7, R11
+        DATA R11, 256
+        CMP  R5, R11
+        JE   done
+        ; vsync after each row for progressive display
+        DATA R0, 0
+        STORE R0, 0xDFFF
+        JMP  yloop
+
+done:   DATA R0, 0
+        STORE R0, 0xDFFF
+        HALT
+
+; =====================================
+; fpmul: Signed 8.8 fixed-point multiply
+; Input: R0, R1 (signed 8.8)
+; Output: R0 = R0 * R1 in 8.8
+; Uses: R2, R3 (caller-save)
+fpmul:
+        PUSH R2
+        PUSH R3
+        DATA R2, 0           ; sign flag
+        ; Check R0 sign (bit 15)
+        MOV  R3, R0
+        DATA R11, 0x8000
+        AND  R3, R11
+        CMP  R3, R15
+        JE   fp_r0pos
+        NOT  R0
+        ADD  R0, R14
+        DATA R2, 1
+fp_r0pos:
+        MOV  R3, R1
+        DATA R11, 0x8000
+        AND  R3, R11
+        CMP  R3, R15
+        JE   fp_r1pos
+        NOT  R1
+        ADD  R1, R14
+        XOR  R2, R14
+fp_r1pos:
+        ; Unsigned multiply: hi:lo = R0 * R1
+        MOV  R3, R0
+        MULH R3, R1          ; R3 = high 16
+        MUL  R0, R1          ; R0 = low 16
+        ; Result = (hi << 8) | (lo >> 8)
+        SHR8 R0              ; R0 >>= 8
+        SHL8 R3              ; R3 <<= 8
+        OR   R0, R3
+        ; Apply sign
+        CMP  R2, R15
+        JE   fp_done
+        NOT  R0
+        ADD  R0, R14
+fp_done:
+        POP  R3
+        POP  R2
+        RET`,
+    bytes: [], expect: 'Mandelbrot set in video RAM',
+  },
   power: {
     name: 'Power', desc: '2^15 = 32768',
     code: `; Compute 2^15 = 32768 using MUL
@@ -1113,6 +1296,249 @@ pds:    DATA R3, 1
         MOD  R0, R1
         RET`,
     bytes: [], expect: '12 25 37 64 89',
+  },
+  matrix: {
+    name: 'Matrix', desc: '4×4 multiply',
+    code: `; 4×4 Matrix Multiplication: C = A × B
+; Stores matrices in RAM, computes C, prints result
+; Uses LDRI/STRI for indexed access
+;
+; A = [1 2 3 4]  B = [2 0 1 0]
+;     [5 6 7 8]      [0 1 0 2]
+;     [1 0 1 0]      [1 0 2 0]
+;     [0 1 0 1]      [0 1 0 2]
+;
+; Expected C:
+;     [5  6  7 12]     row 0: 5 6 7 12
+;     [17 14 19 28]    row 1: 17 14 19 28
+;     [3  0  3  0]     row 2: 3 0 3 0
+;     [0  2  0  4]     row 3: 0 2 0 4
+
+; ── Memory layout ──
+; 0x0300: Matrix A (16 bytes, row-major)
+; 0x0310: Matrix B (16 bytes, row-major)
+; 0x0320: Matrix C (16 bytes, result)
+
+; ── Store Matrix A at 0x0300 ──
+        DATA R0, 1
+        STORE R0, 0x0300
+        DATA R0, 2
+        STORE R0, 0x0301
+        DATA R0, 3
+        STORE R0, 0x0302
+        DATA R0, 4
+        STORE R0, 0x0303
+        DATA R0, 5
+        STORE R0, 0x0304
+        DATA R0, 6
+        STORE R0, 0x0305
+        DATA R0, 7
+        STORE R0, 0x0306
+        DATA R0, 8
+        STORE R0, 0x0307
+        DATA R0, 1
+        STORE R0, 0x0308
+        DATA R0, 0
+        STORE R0, 0x0309
+        DATA R0, 1
+        STORE R0, 0x030A
+        DATA R0, 0
+        STORE R0, 0x030B
+        DATA R0, 0
+        STORE R0, 0x030C
+        DATA R0, 1
+        STORE R0, 0x030D
+        DATA R0, 0
+        STORE R0, 0x030E
+        DATA R0, 1
+        STORE R0, 0x030F
+
+; ── Store Matrix B at 0x0310 ──
+        DATA R0, 2
+        STORE R0, 0x0310
+        DATA R0, 0
+        STORE R0, 0x0311
+        DATA R0, 1
+        STORE R0, 0x0312
+        DATA R0, 0
+        STORE R0, 0x0313
+        DATA R0, 0
+        STORE R0, 0x0314
+        DATA R0, 1
+        STORE R0, 0x0315
+        DATA R0, 0
+        STORE R0, 0x0316
+        DATA R0, 2
+        STORE R0, 0x0317
+        DATA R0, 1
+        STORE R0, 0x0318
+        DATA R0, 0
+        STORE R0, 0x0319
+        DATA R0, 2
+        STORE R0, 0x031A
+        DATA R0, 0
+        STORE R0, 0x031B
+        DATA R0, 0
+        STORE R0, 0x031C
+        DATA R0, 1
+        STORE R0, 0x031D
+        DATA R0, 0
+        STORE R0, 0x031E
+        DATA R0, 2
+        STORE R0, 0x031F
+
+; ── Print header ──
+        DATA R0, 67     ; 'C'
+        OUT  R0
+        DATA R0, 32     ; ' '
+        OUT  R0
+        DATA R0, 61     ; '='
+        OUT  R0
+        DATA R0, 32     ; ' '
+        OUT  R0
+        DATA R0, 65     ; 'A'
+        OUT  R0
+        DATA R0, 42     ; '*'
+        OUT  R0
+        DATA R0, 66     ; 'B'
+        OUT  R0
+        DATA R0, 10
+        OUT  R0
+
+; ── Triple loop: C[i][j] = sum(A[i][k] * B[k][j]) ──
+; R4=i  R5=j  R6=k  R7=sum
+; R8=addr scratch  R9=val scratch
+; R10=4 (const)  R11=scratch
+        DATA R10, 4
+        DATA R4, 0          ; i = 0
+iloop:  DATA R5, 0          ; j = 0
+jloop:  DATA R7, 0          ; sum = 0
+        DATA R6, 0          ; k = 0
+
+kloop:
+        ; Compute A[i][k] addr = 0x0300 + i*4 + k
+        DATA R8, 0
+        ADD  R8, R4
+        MUL  R8, R10        ; i*4
+        ADD  R8, R6          ; + k
+        DATA R11, 0x0300
+        ADD  R8, R11
+        LDRI R9, R8          ; R9 = A[i][k]
+
+        ; Compute B[k][j] addr = 0x0310 + k*4 + j
+        DATA R8, 0
+        ADD  R8, R6
+        MUL  R8, R10        ; k*4
+        ADD  R8, R5          ; + j
+        DATA R11, 0x0310
+        ADD  R8, R11
+        LDRI R8, R8          ; R8 = B[k][j]
+
+        ; sum += A[i][k] * B[k][j]
+        MUL  R9, R8
+        ADD  R7, R9
+
+        ; k++
+        DATA R11, 1
+        ADD  R6, R11
+        CMP  R6, R10
+        JE   kend
+        JMP  kloop
+
+kend:
+        ; Store C[i][j] = sum at 0x0320 + i*4 + j
+        DATA R8, 0
+        ADD  R8, R4
+        MUL  R8, R10
+        ADD  R8, R5
+        DATA R11, 0x0320
+        ADD  R8, R11
+        STRI R7, R8
+
+        ; Print the value
+        PUSH R4
+        PUSH R5
+        DATA R0, 0
+        ADD  R0, R7
+        CALL print_r0
+
+        ; Print separator
+        DATA R0, 32     ; ' '
+        OUT  R0
+        POP  R5
+        POP  R4
+
+        ; j++
+        DATA R11, 1
+        ADD  R5, R11
+        CMP  R5, R10
+        JE   jend
+        JMP  jloop
+
+jend:
+        ; Newline after each row
+        DATA R0, 10
+        OUT  R0
+        ; i++
+        DATA R11, 1
+        ADD  R4, R11
+        CMP  R4, R10
+        JE   done
+        JMP  iloop
+
+done:   HALT
+
+; ══════════════════════════════════════
+; ── print_r0: print R0 as decimal ──
+; Handles 0..255
+print_r0:
+        PUSH R1
+        PUSH R2
+        PUSH R3
+        DATA R1, 100
+        DATA R2, 10
+        DATA R3, 0          ; leading zero flag
+
+        ; Hundreds digit
+        DATA R11, 0
+        ADD  R11, R0
+        DIV  R11, R1         ; R11 = R0 / 100
+        DATA R9, 0
+        CMP  R11, R9
+        JE   tens
+        DATA R3, 1           ; have leading digit
+        DATA R9, 48
+        ADD  R11, R9
+        OUT  R11
+        ; R0 = R0 mod 100
+        MOD  R0, R1
+
+tens:   DATA R11, 0
+        ADD  R11, R0
+        DIV  R11, R2         ; R11 = R0 / 10
+        DATA R9, 0
+        CMP  R11, R9
+        JE   chk_tens
+        DATA R3, 1
+        JMP  pr_tens
+chk_tens:
+        CMP  R3, R9
+        JE   ones            ; skip if no leading digit
+pr_tens:
+        DATA R9, 48
+        ADD  R11, R9
+        OUT  R11
+        MOD  R0, R2
+
+ones:   DATA R9, 48
+        ADD  R0, R9
+        OUT  R0
+
+        POP  R3
+        POP  R2
+        POP  R1
+        RET`,
+    bytes: [], expect: '5 6 7 12 / 17 14 19 28 / 3 0 3 0 / 0 2 0 4',
   },
   flags: {
     name: 'Flags', desc: 'Flag tests',
@@ -1300,7 +1726,7 @@ export default function App() {
           <span style={{
             fontSize: '0.6rem', color: 'var(--text-muted)',
             fontFamily: 'var(--font-mono)', marginLeft: 2,
-          }}>v0.2 · 8-bit CPU</span>
+          }}>v0.2 · 16-bit CPU</span>
         </div>
 
         {/* Program tabs */}

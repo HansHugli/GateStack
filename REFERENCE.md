@@ -5,7 +5,7 @@
 - **Word size**: 16-bit registers, 8-bit memory cells
 - **Registers**: R0–R15 (16 general-purpose 16-bit registers), IAR, IR, ACC, TMP, MAR, SP
 - **RAM**: 64KB (65536 bytes), byte-addressable
-- **Stack**: Grows downward from 0x9FFF (below video RAM)
+- **Stack**: Grows downward from 0x7FFF (below video RAM)
 - **Flags**: Carry, Zero, A>B, Equal (set by ALU ops and CMP)
 
 ## Instruction Encoding
@@ -26,6 +26,7 @@
 | 0x01 | ADD | rA, rB | rA = rA + rB |
 | 0x02 | SUB | rA, rB | rA = rA - rB |
 | 0x03 | MUL | rA, rB | rA = rA × rB |
+| 0x0D | MULH | rA, rB | rA = (rA × rB) >> 16 (high 16 bits of 32-bit product) |
 | 0x04 | DIV | rA, rB | rA = rA ÷ rB (integer) |
 | 0x05 | MOD | rA, rB | rA = rA % rB |
 | 0x06 | SHR | rA | rA = rA >> 1 |
@@ -35,6 +36,9 @@
 | 0x0A | OR | rA, rB | rA = rA \| rB |
 | 0x0B | XOR | rA, rB | rA = rA ^ rB |
 | 0x0C | CMP | rA, rB | Compare (flags only) |
+| 0x0E | MOV | rA, rB | rA = rB (copy register) |
+| 0x0F | SHR8 | rA | rA = rA >> 8 (shift right 8 bits) |
+| 0x17 | SHL8 | rA | rA = rA << 8 (shift left 8 bits) |
 | 0x10 | LOAD | rA, [addr16] | rA = RAM[addr] |
 | 0x11 | STORE | rA, [addr16] | RAM[addr] = rA (low byte) |
 | 0x12 | DATA | rA, imm16 | rA = immediate value |
@@ -54,12 +58,12 @@
 
 ## Video Display
 
-- **Resolution**: 64×64 pixels, 4 colors, 2 bits per pixel (packed)
-- **Pixel format**: 4 pixels per byte, MSB first (bits 7-6 = pixel 0)
-- **Double buffer**: Page 0 at 0xA000–0xA3FF, Page 1 at 0xA400–0xA7FF (1024 bytes each)
-- **PAGE_SELECT**: Write 0 or 1 to address 0xDFFF to swap the display page
-- **Colors**: 0 = off, 1 = dim, 2 = mid, 3 = bright
-- **Rendering**: Draw to back page, then flip PAGE_SELECT for tear-free animation
+- **Resolution**: 256×256 pixels, 16 colors, 4 bits per pixel (packed)
+- **Pixel format**: 2 pixels per byte — high nibble = even column, low nibble = odd column
+- **Video RAM**: 32KB at 0x8000–0xFFFF
+- **Colors**: 16-color palette (0 = black, 1-15 = gradient from indigo through blue, green, yellow, red, purple)
+- **Memory layout**: Row-major, 128 bytes per row (256 pixels ÷ 2)
+- **Stack**: Grows downward from 0x7FFF (below video RAM)
 
 ## Assembly Syntax
 

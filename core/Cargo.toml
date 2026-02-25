@@ -2,7 +2,7 @@
 name = "gatestack-core"
 version = "0.1.0"
 edition = "2021"
-description = "GateStack - An 8-bit computer simulator core"
+description = "GateStack - A 16-bit computer simulator core"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

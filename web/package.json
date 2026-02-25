@@ -1,7 +1,7 @@
 {
   "name": "gatestack",
   "version": "2.0.0",
-  "description": "GateStack — Visual 8-bit Computer Simulator",
+  "description": "GateStack — Visual 16-bit Computer Simulator",
   "author": "Hans",
   "license": "MIT",
   "private": true,
@@ -10,13 +10,14 @@
   "scripts": {
     "dev": "vite",
     "dev:electron": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node -e \"const fs=require('fs');fs.copyFileSync('electron/main.mjs','main.mjs');fs.copyFileSync('electron/preload.cjs','preload.cjs');\"",
     "build:wasm": "cd ../core && wasm-pack build --target web --out-dir ../web/src/wasm",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "npm run build && electron-builder",
-    "electron:build:win": "npm run build && electron-builder --win",
-    "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:linux": "npm run build && electron-builder --linux",
+    "clean:release": "node -e \"const fs=require('fs'),p=require('path'),d=p.join(__dirname,'release');if(fs.existsSync(d)){for(let i=0;i<5;i++){try{fs.rmSync(d,{recursive:true,force:true});break}catch(e){if(i===4)throw e;const w=Date.now();while(Date.now()-w<2000){}}}}\"",
+    "electron:build": "npm run build && npm run clean:release && electron-builder",
+    "electron:build:win": "npm run build && npm run clean:release && electron-builder --win",
+    "electron:build:mac": "npm run build && npm run clean:release && electron-builder --mac",
+    "electron:build:linux": "npm run build && npm run clean:release && electron-builder --linux",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -45,10 +46,15 @@
       "output": "release",
       "buildResources": "build"
     },
+    "asar": false,
     "files": [
-      "dist/**/*",
-      "electron/**/*"
+      "dist",
+      "main.mjs",
+      "preload.cjs"
     ],
+    "extraMetadata": {
+      "main": "main.mjs"
+    },
     "win": {
       "target": [
         {

@@ -101,6 +101,10 @@ export const OP = {
   ADD:  0x01, SUB:  0x02, MUL:  0x03, DIV:  0x04, MOD:  0x05,
   SHR:  0x06, SHL:  0x07, NOT:  0x08,
   AND:  0x09, OR:   0x0A, XOR:  0x0B, CMP:  0x0C,
+  MULH: 0x0D,  // High 16 bits of 32-bit multiply
+  MOV:  0x0E,  // Copy rB to rA
+  SHR8: 0x0F,  // Shift right 8 bits (byte swap low)
+  SHL8: 0x17,  // Shift left 8 bits (byte swap high)
   LOAD: 0x10, STORE:0x11, DATA: 0x12,
   PUSH: 0x13, POP:  0x14, LDRI: 0x15, STRI: 0x16,
   JMP:  0x18, JC:   0x19, JA:   0x1A, JE:   0x1B,
@@ -133,7 +137,7 @@ const MASK16 = 0xFFFF;
 class MockComputer implements IComputer {
   private state: CpuState = {
     r: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-    acc: 0, tmp: 0, iar: 0, ir: 0, sp: 0x9FFF,
+    acc: 0, tmp: 0, iar: 0, ir: 0, sp: 0x7FFF,
     flags: { carry: false, a_larger: false, equal: false, zero: true },
     bus: 0, halted: false, cycle_count: 0,
   };
@@ -207,8 +211,8 @@ class MockComputer implements IComputer {
     this.state.iar = (addr + size) & MASK16;
     steps.push({ IncrementIAR: { new_value: this.state.iar } });
 
-    // ── ALU operations (opcode 0x01–0x0C) ──────────────────────────────
-    if (opcode >= OP.ADD && opcode <= OP.CMP) {
+    // ── ALU operations (opcode 0x01–0x0F, 0x17) ──────────────────────────
+    if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8) {
       const a = this.state.r[rA];
       const b = this.state.r[rB];
       let result = 0;
@@ -218,6 +222,7 @@ class MockComputer implements IComputer {
         case OP.ADD: { const s = a + b; result = s & MASK16; carry = s > MASK16; break; }
         case OP.SUB: { const s = a - b; result = s & MASK16; carry = s < 0; break; }
         case OP.MUL: { const s = a * b; result = s & MASK16; carry = s > MASK16; break; }
+        case OP.MULH: { const s = a * b; result = (s >>> 16) & MASK16; carry = false; break; }
         case OP.DIV: { result = b === 0 ? 0 : Math.floor(a / b) & MASK16; break; }
         case OP.MOD: { result = b === 0 ? 0 : (a % b) & MASK16; break; }
         case OP.SHR: { result = a >>> 1; carry = (a & 1) !== 0; break; }
@@ -227,6 +232,9 @@ class MockComputer implements IComputer {
         case OP.OR:  { result = a | b; break; }
         case OP.XOR: { result = a ^ b; break; }
         case OP.CMP: { result = a; break; } // CMP doesn't store result
+        case OP.MOV: { result = b; break; }
+        case OP.SHR8: { result = (a >>> 8) & 0xFF; carry = (a & 0x80) !== 0; break; }
+        case OP.SHL8: { result = (a << 8) & MASK16; carry = (a & 0x80) !== 0; break; }
       }
 
       const flags: Flags = { carry, a_larger: a > b, equal: a === b, zero: result === 0 };
@@ -373,20 +381,189 @@ class MockComputer implements IComputer {
   }
 
   run(maxCycles: number): number {
+    // ── Fast-path batch execution — zero trace allocation ──
+    const mem = this.memory;
+    const r = this.state.r;
+    const bp = this.breakpoints;
+    let iar = this.state.iar;
+    let sp = this.state.sp;
+    let fCarry = this.state.flags.carry;
+    let fALarger = this.state.flags.a_larger;
+    let fEqual = this.state.flags.equal;
+    let fZero = this.state.flags.zero;
     let executed = 0;
+
     for (let i = 0; i < maxCycles; i++) {
-      if (this.state.halted || this.breakpoints.has(this.state.iar) || this.inputWaiting) break;
-      // Check if next instruction is STORE to PAGE_SELECT (0xDFFF) — vsync point
-      const pc = this.state.iar;
-      const opcode = this.memory[pc];
-      const isPageFlip = opcode === OP.STORE &&
-        this.read16(pc + 2) === 0xDFFF;
-      this.step();
+      if (this.state.halted || this.inputWaiting) break;
+      if (bp.size > 0 && bp.has(iar) && executed > 0) break;
+
+      const addr = iar;
+      const opcode = mem[addr];
+      const regByte = mem[(addr + 1) & 0xFFFF];
+      const rA = (regByte >> 4) & 0x0F;
+      const rB = regByte & 0x0F;
+
+      // HALT
+      if (opcode === 0x00) { this.state.halted = true; break; }
+
+      // Compute instruction size
+      let size: number;
+      if (opcode === 0x10 || opcode === 0x11 || opcode === 0x12) size = 4;       // LOAD/STORE/DATA
+      else if (opcode === 0x18 || opcode === 0x19 || opcode === 0x1A || opcode === 0x1B || opcode === 0x1D) size = 3; // JMP/JC/JA/JE/CALL
+      else size = 2;
+
+      // Advance IAR
+      iar = (addr + size) & 0xFFFF;
+
+      // ── ALU (0x01-0x0F, 0x17) ──
+      if ((opcode >= 0x01 && opcode <= 0x0F) || opcode === 0x17) {
+        const a = r[rA];
+        const b = r[rB];
+        let result = 0;
+        let carry = false;
+
+        switch (opcode) {
+          case 0x01: { const s = a + b; result = s & 0xFFFF; carry = s > 0xFFFF; break; }       // ADD
+          case 0x02: { const s = a - b; result = s & 0xFFFF; carry = s < 0; break; }             // SUB
+          case 0x03: { const s = a * b; result = s & 0xFFFF; carry = s > 0xFFFF; break; }        // MUL
+          case 0x0D: { const s = a * b; result = (s >>> 16) & 0xFFFF; carry = false; break; }    // MULH
+          case 0x04: { result = b === 0 ? 0 : Math.floor(a / b) & 0xFFFF; break; }               // DIV
+          case 0x05: { result = b === 0 ? 0 : (a % b) & 0xFFFF; break; }                         // MOD
+          case 0x06: { result = a >>> 1; carry = (a & 1) !== 0; break; }                          // SHR
+          case 0x07: { const s = a << 1; result = s & 0xFFFF; carry = s > 0xFFFF; break; }       // SHL
+          case 0x08: { result = (~a) & 0xFFFF; break; }                                           // NOT
+          case 0x09: { result = a & b; break; }                                                    // AND
+          case 0x0A: { result = a | b; break; }                                                    // OR
+          case 0x0B: { result = a ^ b; break; }                                                    // XOR
+          case 0x0C: { result = a; break; }                                                        // CMP
+          case 0x0E: { result = b; break; }                                                        // MOV
+          case 0x0F: { result = (a >>> 8) & 0xFF; carry = (a & 0x80) !== 0; break; }              // SHR8
+          case 0x17: { result = (a << 8) & 0xFFFF; carry = (a & 0x80) !== 0; break; }            // SHL8
+        }
+
+        fCarry = carry; fALarger = a > b; fEqual = a === b; fZero = result === 0;
+        if (opcode !== 0x0C) r[rA] = result;  // CMP doesn't store
+      }
+
+      // ── LOAD rA, [addr16] ──
+      else if (opcode === 0x10) {
+        const mA = mem[(addr + 2) & 0xFFFF] | (mem[(addr + 3) & 0xFFFF] << 8);
+        r[rA] = mem[mA & 0xFFFF];
+      }
+
+      // ── STORE rA, [addr16] ──
+      else if (opcode === 0x11) {
+        const mA = mem[(addr + 2) & 0xFFFF] | (mem[(addr + 3) & 0xFFFF] << 8);
+        mem[mA & 0xFFFF] = r[rA] & 0xFF;
+        // Vsync: break after frame flip
+        if (mA === 0xDFFF && executed > 0) {
+          this.state.cycle_count++;
+          executed++;
+          break;
+        }
+      }
+
+      // ── DATA rA, imm16 ──
+      else if (opcode === 0x12) {
+        r[rA] = mem[(addr + 2) & 0xFFFF] | (mem[(addr + 3) & 0xFFFF] << 8);
+      }
+
+      // ── LDRI rA, rB ──
+      else if (opcode === 0x15) {
+        r[rA] = mem[r[rB] & 0xFFFF];
+      }
+
+      // ── STRI rA, rB ──
+      else if (opcode === 0x16) {
+        mem[r[rB] & 0xFFFF] = r[rA] & 0xFF;
+      }
+
+      // ── PUSH rA ──
+      else if (opcode === 0x13) {
+        const val = r[rA];
+        const lo = sp - 1;
+        mem[lo & 0xFFFF] = val & 0xFF;
+        mem[(lo + 1) & 0xFFFF] = (val >> 8) & 0xFF;
+        sp = (sp - 2) & 0xFFFF;
+      }
+
+      // ── POP rA ──
+      else if (opcode === 0x14) {
+        sp = (sp + 2) & 0xFFFF;
+        const lo = sp - 1;
+        r[rA] = mem[lo & 0xFFFF] | (mem[(lo + 1) & 0xFFFF] << 8);
+      }
+
+      // ── JMP ──
+      else if (opcode === 0x18) {
+        iar = mem[(addr + 1) & 0xFFFF] | (mem[(addr + 2) & 0xFFFF] << 8);
+      }
+
+      // ── JC ──
+      else if (opcode === 0x19) {
+        const target = mem[(addr + 1) & 0xFFFF] | (mem[(addr + 2) & 0xFFFF] << 8);
+        if (fCarry) iar = target;
+      }
+
+      // ── JA ──
+      else if (opcode === 0x1A) {
+        const target = mem[(addr + 1) & 0xFFFF] | (mem[(addr + 2) & 0xFFFF] << 8);
+        if (fALarger) iar = target;
+      }
+
+      // ── JE ──
+      else if (opcode === 0x1B) {
+        const target = mem[(addr + 1) & 0xFFFF] | (mem[(addr + 2) & 0xFFFF] << 8);
+        if (fEqual) iar = target;
+      }
+
+      // ── JMPR rA ──
+      else if (opcode === 0x1C) {
+        iar = r[rA];
+      }
+
+      // ── CALL ──
+      else if (opcode === 0x1D) {
+        const target = mem[(addr + 1) & 0xFFFF] | (mem[(addr + 2) & 0xFFFF] << 8);
+        const retAddr = iar;
+        const lo = sp - 1;
+        mem[lo & 0xFFFF] = retAddr & 0xFF;
+        mem[(lo + 1) & 0xFFFF] = (retAddr >> 8) & 0xFF;
+        sp = (sp - 2) & 0xFFFF;
+        iar = target;
+      }
+
+      // ── RET ──
+      else if (opcode === 0x1E) {
+        sp = (sp + 2) & 0xFFFF;
+        const lo = sp - 1;
+        iar = mem[lo & 0xFFFF] | (mem[(lo + 1) & 0xFFFF] << 8);
+      }
+
+      // ── OUT rA ──
+      else if (opcode === 0x1F) {
+        this.consoleBuffer.push(r[rA] & 0xFF);
+      }
+
+      // ── IN rA ──
+      else if (opcode === 0x20) {
+        this.inputWaiting = { register: rA, address: addr };
+        iar = addr; // rewind
+        break;
+      }
+
+      this.state.cycle_count++;
       executed++;
-      if (this.inputWaiting) break;
-      // Break right after page flip so UI sees a complete frame
-      if (isPageFlip && executed > 1) break;
     }
+
+    // Write locals back to state
+    this.state.iar = iar;
+    this.state.sp = sp;
+    this.state.flags.carry = fCarry;
+    this.state.flags.a_larger = fALarger;
+    this.state.flags.equal = fEqual;
+    this.state.flags.zero = fZero;
+
     return executed;
   }
 
@@ -404,7 +581,7 @@ class MockComputer implements IComputer {
   }
   reset(): void {
     this.state = {
-      r: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], acc: 0, tmp: 0, iar: 0, ir: 0, sp: 0x9FFF,
+      r: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], acc: 0, tmp: 0, iar: 0, ir: 0, sp: 0x7FFF,
       flags: { carry: false, a_larger: false, equal: false, zero: true },
       bus: 0, halted: false, cycle_count: 0,
     };

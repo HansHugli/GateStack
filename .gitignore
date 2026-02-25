@@ -21,3 +21,8 @@ Thumbs.db
 *.dmg
 *.AppImage
 *.snap
+web/main.mjs
+web/preload.cjs
+nul
+
+handle64.exe

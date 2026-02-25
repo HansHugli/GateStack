@@ -35,6 +35,8 @@ export interface ComputerHook {
   hardReset: () => void;
   setSpeed: (cyclesPerFrame: number) => void;
   poke: (addr: number, value: number) => void;
+  pokeRaw: (addr: number, value: number) => void;
+  refresh: () => void;
   toggleBreakpoint: (addr: number) => void;
   clearBreakpoints: () => void;
   clearConsole: () => void;
@@ -244,6 +246,16 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     refreshState();
   }, [refreshState]);
 
+  // Bulk-friendly: write without triggering re-render
+  const pokeRaw = useCallback((addr: number, value: number) => {
+    computerRef.current?.poke(addr, value);
+  }, []);
+
+  // Manual refresh trigger (call after bulk pokeRaw)
+  const refresh = useCallback(() => {
+    refreshState();
+  }, [refreshState]);
+
   const toggleBreakpoint = useCallback((addr: number) => {
     const c = computerRef.current;
     if (!c) return;
@@ -294,7 +306,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     state, memory, memoryVersion, trace, traceHistory, isRunning, isReady,
     breakpoints, consoleOutput, canStepBack, waitingForInput,
     loadProgram, step, stepBack, run, pause, reset, hardReset,
-    setSpeed, poke, toggleBreakpoint, clearBreakpoints, clearConsole,
+    setSpeed, poke, pokeRaw, refresh, toggleBreakpoint, clearBreakpoints, clearConsole,
     submitInput,
   };
 }

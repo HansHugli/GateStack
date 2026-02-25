@@ -1,4 +1,4 @@
-# ⚡ GateStack — 8-Bit Computer Simulator
+# ⚡ GateStack — 16-Bit Computer Simulator
 
 A hybrid **Rust/WASM + React** simulator that lets you **learn how CPUs work** while running programs at **real speed**.
 

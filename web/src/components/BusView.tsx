@@ -25,7 +25,7 @@ const TOOLTIPS: Record<string, { full: string; desc: string }> = {
   'ACC': { full: 'Accumulator', desc: 'Stores the result of the last ALU operation' },
   'TMP': { full: 'Temporary Register', desc: 'Internal register holding the second ALU operand' },
   'RAM': { full: 'Random Access Memory', desc: '64KB of storage for programs and data' },
-  'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x9FFF, grows downward' },
+  'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x7FFF, grows downward' },
 };
 
 interface TooltipState {

@@ -1,7 +1,7 @@
 // ============================================================================
 // electron/main.mjs — GateStack Electron Main Process
 // ============================================================================
-import { app, BrowserWindow, Menu, shell, dialog } from 'electron';
+import { app, BrowserWindow, Menu, shell, dialog, session } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -17,15 +17,25 @@ function createWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
-    title: 'GateStack — 8-bit Computer Simulator',
+    title: 'GateStack — 16-bit Computer Simulator',
     backgroundColor: '#06080f',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // sandbox must be false for preload IPC to work
+      sandbox: false,
     },
+  });
+
+  // Set CSP via response headers — works correctly with file:// protocol
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': ["default-src 'self' file: data:; script-src 'self' file: 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:;"]
+      }
+    });
   });
 
   // Graceful show
@@ -36,10 +46,10 @@ function createWindow() {
   // Load the app
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
-    // Open DevTools in dev mode (undocked)
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    const appPath = app.getAppPath();
+    mainWindow.loadFile(path.join(appPath, 'dist', 'index.html'));
   }
 
   // Open external links in default browser
