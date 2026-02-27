@@ -28,6 +28,8 @@ Originally based on a gate-level C# implementation (SimpleComputer), redesigned 
 
 ## Quick Start (Mock Mode — No Rust Required)
 
+>Note: Before you try to run this project, rename `server/db-sample.json` to `server/db.json`
+
 You can start developing the UI immediately without installing Rust:
 
 ```bash
