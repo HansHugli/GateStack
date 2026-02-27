@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GateStack Architecture Analysis</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+  h1 { font-size: 1.8rem; margin-bottom: 8px; color: #38bdf8; }
+  .subtitle { color: #94a3b8; margin-bottom: 32px; font-size: 0.95rem; }
+  
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  
+  .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+  .card h2 { font-size: 1.1rem; color: #38bdf8; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .icon { font-size: 1.3rem; }
+  
+  /* Architecture Diagram */
+  .arch-diagram { background: #0f172a; border-radius: 8px; padding: 20px; position: relative; min-height: 420px; }
+  .component { position: absolute; border-radius: 8px; padding: 10px 14px; font-size: 0.8rem; font-weight: 600; text-align: center; border: 2px solid; transition: all 0.2s; cursor: default; }
+  .component:hover { transform: scale(1.05); z-index: 10; }
+  .component .count { font-size: 0.65rem; font-weight: 400; opacity: 0.7; display: block; }
+  
+  .comp-gate { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; }
+  .comp-mem { background: #1e3a3f; border-color: #14b8a6; color: #5eead4; }
+  .comp-alu { background: #3b1e3f; border-color: #a855f7; color: #d8b4fe; }
+  .comp-cpu { background: #3f2a1e; border-color: #f59e0b; color: #fcd34d; }
+  .comp-data { background: #1e3f2a; border-color: #22c55e; color: #86efac; }
+  .comp-bus { background: #3f1e2a; border-color: #ef4444; color: #fca5a5; }
+  
+  .bus-line { position: absolute; background: #ef4444; opacity: 0.4; }
+  .bus-h { height: 3px; }
+  .bus-v { width: 3px; }
+  
+  /* Stats */
+  .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: #94a3b8; }
+  .stat-value { color: #f1f5f9; font-weight: 600; }
+  .stat-value.warn { color: #fbbf24; }
+  .stat-value.danger { color: #f87171; }
+  .stat-value.good { color: #4ade80; }
+  
+  /* Object count chart */
+  .bar-chart { margin-top: 12px; }
+  .bar-row { display: flex; align-items: center; margin-bottom: 6px; gap: 8px; }
+  .bar-label { width: 100px; font-size: 0.75rem; color: #94a3b8; text-align: right; }
+  .bar-track { flex: 1; height: 20px; background: #0f172a; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 0.7rem; font-weight: 600; min-width: 30px; }
+  
+  /* Performance section */
+  .perf-issue { background: #1a1a2e; border-left: 3px solid #f59e0b; padding: 12px; margin-bottom: 10px; border-radius: 0 8px 8px 0; }
+  .perf-issue.critical { border-left-color: #ef4444; }
+  .perf-issue .title { font-weight: 600; font-size: 0.85rem; margin-bottom: 4px; }
+  .perf-issue .desc { font-size: 0.78rem; color: #94a3b8; }
+  .perf-issue .impact { font-size: 0.72rem; color: #fbbf24; margin-top: 4px; }
+  .perf-issue.critical .impact { color: #f87171; }
+  
+  /* Language comparison */
+  .lang-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .lang-table th { text-align: left; padding: 8px; color: #38bdf8; border-bottom: 2px solid #334155; }
+  .lang-table td { padding: 8px; border-bottom: 1px solid #1e293b; }
+  .lang-table tr:hover { background: #1e293b; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+  .badge-green { background: #064e3b; color: #34d399; }
+  .badge-yellow { background: #451a03; color: #fbbf24; }
+  .badge-red { background: #450a0a; color: #f87171; }
+  .badge-blue { background: #0c2d48; color: #38bdf8; }
+  
+  .full-width { grid-column: 1 / -1; }
+  
+  .recommendation { background: linear-gradient(135deg, #1e293b 0%, #0f2027 100%); border: 2px solid #38bdf8; }
+  .recommendation h2 { color: #fcd34d; }
+  .rec-option { background: #0f172a; border-radius: 8px; padding: 16px; margin-bottom: 12px; border: 1px solid #334155; }
+  .rec-option h3 { color: #38bdf8; margin-bottom: 6px; font-size: 0.95rem; }
+  .rec-option p { font-size: 0.82rem; color: #94a3b8; line-height: 1.5; }
+  .rec-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.68rem; font-weight: 600; margin-right: 4px; margin-top: 8px; }
+  .tag-perf { background: #064e3b; color: #34d399; }
+  .tag-viz { background: #1e1b4b; color: #a78bfa; }
+  .tag-ease { background: #451a03; color: #fbbf24; }
+  .tag-rec { background: #0c2d48; color: #38bdf8; }
+</style>
+</head>
+<body>
+
+<h1>🖥️ GateStack — Architecture Analysis</h1>
+<p class="subtitle">Gate-level computer emulator · C# / UWP · 46 source files across 9 modules</p>
+
+<div class="grid">
+  
+  <!-- Architecture Diagram -->
+  <div class="card full-width">
+    <h2><span class="icon">📐</span> Component Architecture</h2>
+    <div class="arch-diagram">
+      <!-- Main Bus -->
+      <div class="bus-line bus-h" style="top: 200px; left: 80px; width: calc(100% - 160px);"></div>
+      <div style="position:absolute; top:192px; left:50%; transform:translateX(-50%); color:#ef4444; font-size:0.7rem; font-weight:700; background:#0f172a; padding: 0 8px;">═══ 8-BIT MAIN BUS ═══</div>
+      
+      <!-- Gates Layer -->
+      <div class="component comp-gate" style="top: 16px; left: 20px;">
+        NAND / AND / OR<br>NOT / XOR
+        <span class="count">10 gate classes</span>
+      </div>
+      
+      <!-- Data Structures -->
+      <div class="component comp-data" style="top: 16px; left: 200px;">
+        Byte3 / Byte4<br>Byte8 / Byte16<br>Byte256
+        <span class="count">5 data types</span>
+      </div>
+      
+      <!-- Decoders -->
+      <div class="component comp-gate" style="top: 16px; left: 400px;">
+        Decoder 2x4<br>Decoder 3x8<br>Decoder 4x16<br>Decoder 8x256
+        <span class="count">4 decoders</span>
+      </div>
+      
+      <!-- ASCII -->
+      <div class="component comp-data" style="top: 16px; right: 20px;">
+        ASCII8
+        <span class="count">char lookup</span>
+      </div>
+      
+      <!-- CPU Components (above bus) -->
+      <div class="component comp-cpu" style="top: 110px; left: 20px;">
+        Clock
+        <span class="count">DispatcherTimer</span>
+      </div>
+      <div class="component comp-cpu" style="top: 110px; left: 150px;">
+        Stepper7
+        <span class="count">12 MemGates</span>
+      </div>
+      <div class="component comp-cpu" style="top: 110px; left: 290px;">
+        ControlSection
+        <span class="count">~30 ctrl signals</span>
+      </div>
+      <div class="component comp-cpu" style="top: 110px; left: 470px;">
+        IRControl
+        <span class="count">instruction reg</span>
+      </div>
+      <div class="component comp-bus" style="top: 110px; right: 20px;">
+        Bus8_1
+        <span class="count">bus mux</span>
+      </div>
+      
+      <!-- Below bus: ALU, Memory, Registers -->
+      <div class="component comp-alu" style="top: 240px; left: 20px; width: 200px;">
+        ALU8
+        <span class="count">ADD SHR SHL NOT AND OR XOR CMP</span>
+      </div>
+      <div class="component comp-alu" style="top: 320px; left: 20px;">
+        FullAdder → Adder8
+        <span class="count">ripple carry</span>
+      </div>
+      <div class="component comp-alu" style="top: 320px; left: 195px;">
+        Comparator<br>Shifters
+        <span class="count">SHL / SHR</span>
+      </div>
+      
+      <div class="component comp-mem" style="top: 240px; left: 340px;">
+        Register8 × 4
+        <span class="count">R0 R1 R2 R3</span>
+      </div>
+      <div class="component comp-mem" style="top: 240px; right: 20px; width: 180px;">
+        RAM256
+        <span class="count">256 × RAMRegister8</span>
+      </div>
+      <div class="component comp-mem" style="top: 320px; left: 340px;">
+        ByteGate8
+        <span class="count">8-bit latch</span>
+      </div>
+      <div class="component comp-mem" style="top: 320px; right: 20px;">
+        MAR · ACC · TMP
+        <span class="count">special registers</span>
+      </div>
+      
+      <div class="component comp-bus" style="top: 380px; left: 50%; transform: translateX(-50%);">
+        Computer.cs
+        <span class="count">top-level wiring (in progress)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Object Instantiation Count -->
+  <div class="card">
+    <h2><span class="icon">📊</span> Object Count per RAM Update</h2>
+    <p style="font-size:0.78rem; color:#94a3b8; margin-bottom:12px;">
+      Each RAM256 contains 256 RAMRegisters, each with a Register8, ByteGate8, Enabler8, and MemGates.
+      Here's the approximate gate object count:
+    </p>
+    <div class="bar-chart">
+      <div class="bar-row">
+        <span class="bar-label">MemGate</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%; background:#ef4444;">~16,384</div></div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">NandGate</span>
+        <div class="bar-track"><div class="bar-fill" style="width:80%; background:#f59e0b;">~65,536</div></div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">AndGate</span>
+        <div class="bar-track"><div class="bar-fill" style="width:25%; background:#3b82f6;">~4,096</div></div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Register8</span>
+        <div class="bar-track"><div class="bar-fill" style="width:15%; background:#14b8a6;">256</div></div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Decoder</span>
+        <div class="bar-track"><div class="bar-fill" style="width:3%; background:#a855f7;">2</div></div>
+      </div>
+    </div>
+    <p style="font-size:0.75rem; color:#fbbf24; margin-top:12px;">
+      ⚠️ RAM256 alone creates ~90,000+ gate objects at startup
+    </p>
+  </div>
+
+  <!-- Performance Issues -->
+  <div class="card">
+    <h2><span class="icon">⚡</span> Key Performance Concerns</h2>
+    
+    <div class="perf-issue critical">
+      <div class="title">1. String-based Byte8 construction</div>
+      <div class="desc">Every gate output creates new Byte8 via string concatenation + parsing. OByte8 properties build strings on every access.</div>
+      <div class="impact">🔴 ~100K+ string allocs per clock cycle</div>
+    </div>
+    
+    <div class="perf-issue critical">
+      <div class="title">2. Gate-level RAM simulation</div>
+      <div class="desc">256 RAMRegisters × 8 MemGates × 4 NandGates each = ~90K objects. Real emulators use byte arrays.</div>
+      <div class="impact">🔴 O(n²) RAM access, massive GC pressure</div>
+    </div>
+    
+    <div class="perf-issue">
+      <div class="title">3. DispatcherTimer Clock</div>
+      <div class="desc">UI timer (250ms) limits clock to ~4 Hz. Real emulators decouple simulation from rendering.</div>
+      <div class="impact">🟡 Max ~4 instructions/sec with current design</div>
+    </div>
+    
+    <div class="perf-issue">
+      <div class="title">4. UWP Platform Lock-in</div>
+      <div class="desc">Uses Windows.UI.Xaml (UWP), which limits portability and is being superseded by WinUI 3.</div>
+      <div class="impact">🟡 Windows-only, aging platform</div>
+    </div>
+  </div>
+
+  <!-- Language Comparison -->
+  <div class="card full-width">
+    <h2><span class="icon">🔬</span> Language / Platform Comparison for Rewrite</h2>
+    <table class="lang-table">
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Raw Speed</th>
+          <th>Visualization</th>
+          <th>Cross-Platform</th>
+          <th>Your Experience</th>
+          <th>Dev Speed</th>
+          <th>Best For</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>TypeScript + React</strong><br><span style="color:#94a3b8; font-size:0.72rem;">Web or Electron</span></td>
+          <td><span class="badge badge-yellow">Good</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Strong</span></td>
+          <td><span class="badge badge-green">Fast</span></td>
+          <td>Visual/educational focus</td>
+        </tr>
+        <tr>
+          <td><strong>C# + Avalonia/WPF</strong><br><span style="color:#94a3b8; font-size:0.72rem;">Desktop native</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-yellow">Good</span></td>
+          <td><span class="badge badge-yellow">Good*</span></td>
+          <td><span class="badge badge-green">Strong</span></td>
+          <td><span class="badge badge-yellow">Medium</span></td>
+          <td>Performance-critical sim</td>
+        </tr>
+        <tr>
+          <td><strong>Rust + WASM</strong><br><span style="color:#94a3b8; font-size:0.72rem;">Web with native core</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-red">Learning</span></td>
+          <td><span class="badge badge-red">Slow</span></td>
+          <td>Max perf + web viz</td>
+        </tr>
+        <tr style="background: #0c2d48;">
+          <td><strong>🏆 TS/React + WASM Core</strong><br><span style="color:#94a3b8; font-size:0.72rem;">Hybrid approach</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Excellent</span></td>
+          <td><span class="badge badge-green">Strong</span></td>
+          <td><span class="badge badge-yellow">Medium</span></td>
+          <td>Best of both worlds</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.72rem; color:#94a3b8; margin-top:8px;">* Avalonia is cross-platform; WPF is Windows-only</p>
+  </div>
+
+  <!-- Recommendation -->
+  <div class="card full-width recommendation">
+    <h2><span class="icon">💡</span> My Recommendation</h2>
+    
+    <div class="rec-option" style="border-color: #38bdf8;">
+      <h3>🥇 Option A: TypeScript + React (Web/Electron) — Best Fit</h3>
+      <p>
+        Given your Electron experience, visual learning preference, and the <em>educational</em> nature of this project, 
+        TypeScript with React gives you the richest visualization layer with very little friction. Canvas/SVG can render 
+        live gate diagrams, register states, memory maps, and signal traces. V8's JIT is fast enough — your bottleneck 
+        is the gate-level simulation design, not the language. If we restructure the architecture (use typed arrays 
+        instead of object-per-gate), JS can run millions of operations per second.
+      </p>
+      <span class="rec-tag tag-viz">Great Visualization</span>
+      <span class="rec-tag tag-ease">Leverages Your Skills</span>
+      <span class="rec-tag tag-perf">Good Perf w/ Optimization</span>
+      <span class="rec-tag tag-rec">Recommended</span>
+    </div>
+    
+    <div class="rec-option">
+      <h3>🥈 Option B: C# Modernized (.NET 8 + Avalonia)</h3>
+      <p>
+        Stay in C# but ditch UWP for modern .NET 8 with Avalonia (cross-platform) or WPF. This preserves your 
+        existing logic and gives ~2-3× better raw performance than JS. Worth it if you plan to push toward 
+        cycle-accurate simulation with thousands of gates running at MHz speeds.
+      </p>
+      <span class="rec-tag tag-perf">Best Raw Performance</span>
+      <span class="rec-tag tag-ease">Preserves Existing Code</span>
+    </div>
+    
+    <div class="rec-option">
+      <h3>🥉 Option C: Hybrid (C/Rust WASM Core + React Frontend)</h3>
+      <p>
+        Write the simulation engine in C or Rust, compile to WebAssembly, and wrap it with a React visualization 
+        layer. Maximum performance for the hot loop, maximum flexibility for the UI. Higher complexity, but the 
+        cleanest architecture separation.
+      </p>
+      <span class="rec-tag tag-perf">Maximum Performance</span>
+      <span class="rec-tag tag-viz">Great Visualization</span>
+    </div>
+  </div>
+
+  <!-- Key Questions -->
+  <div class="card full-width" style="border-color: #fcd34d;">
+    <h2><span class="icon">❓</span> Critical Design Decision: Simulation Fidelity</h2>
+    <p style="font-size:0.85rem; color:#cbd5e1; line-height: 1.6; margin-bottom:12px;">
+      The biggest architectural question isn't the language — it's <strong>how deep do you want the gate simulation to go?</strong>
+    </p>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div style="background:#0f172a; padding:16px; border-radius:8px; border:1px solid #334155;">
+        <h3 style="color:#14b8a6; margin-bottom:8px; font-size:0.9rem;">🔬 Current: Full Gate-Level</h3>
+        <p style="font-size:0.78rem; color:#94a3b8; line-height:1.5;">
+          Every OR is built from NOT + NAND. Every register is 8 MemGates of 4 NANDs each. 
+          Beautiful for understanding, but creates ~90K+ objects for RAM alone. 
+          Performance ceiling is low regardless of language.
+        </p>
+      </div>
+      <div style="background:#0f172a; padding:16px; border-radius:8px; border:1px solid #334155;">
+        <h3 style="color:#a855f7; margin-bottom:8px; font-size:0.9rem;">⚡ Alternative: Behavioral + Visual Gates</h3>
+        <p style="font-size:0.78rem; color:#94a3b8; line-height:1.5;">
+          Use efficient data structures internally (typed arrays, bitwise ops) for speed, 
+          but <em>visualize</em> gates on-screen so you still see the gate-level behavior. 
+          RAM becomes a Uint8Array. ALU uses bitwise &amp;, |, ^. Orders of magnitude faster.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

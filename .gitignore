@@ -25,5 +25,4 @@ web/main.mjs
 web/preload.cjs
 
 # App specific
-content/
 nul

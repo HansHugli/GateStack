@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GateStack — Hybrid Architecture Plan</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e1a; color: #e2e8f0; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; color: #38bdf8; }
+  .subtitle { color: #94a3b8; margin-bottom: 32px; font-size: 0.95rem; }
+  
+  .section { margin-bottom: 36px; }
+  .section-title { font-size: 1.2rem; color: #fcd34d; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+  
+  /* Comparison panels */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; background: #334155; border-radius: 12px; overflow: hidden; }
+  .compare-panel { background: #1e293b; padding: 20px; }
+  .compare-panel h3 { font-size: 1rem; margin-bottom: 12px; }
+  .compare-panel.left h3 { color: #f87171; }
+  .compare-panel.right h3 { color: #4ade80; }
+  
+  pre { background: #0f172a; border-radius: 8px; padding: 14px; font-size: 0.75rem; line-height: 1.5; overflow-x: auto; margin-bottom: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  pre .comment { color: #64748b; }
+  pre .keyword { color: #c084fc; }
+  pre .type { color: #38bdf8; }
+  pre .string { color: #4ade80; }
+  pre .number { color: #fbbf24; }
+  pre .fn { color: #f472b6; }
+  
+  .metric { display: flex; align-items: center; gap: 12px; padding: 10px; background: #0f172a; border-radius: 8px; margin-bottom: 8px; }
+  .metric-icon { font-size: 1.4rem; }
+  .metric-label { font-size: 0.78rem; color: #94a3b8; }
+  .metric-value { font-size: 1.1rem; font-weight: 700; }
+  .metric-value.bad { color: #f87171; }
+  .metric-value.good { color: #4ade80; }
+  
+  /* Architecture diagram */
+  .arch-box { background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; }
+  .layer { border-radius: 10px; padding: 16px; margin-bottom: 12px; position: relative; }
+  .layer-title { font-size: 0.85rem; font-weight: 700; margin-bottom: 8px; }
+  .layer-items { display: flex; flex-wrap: wrap; gap: 8px; }
+  .layer-item { background: rgba(0,0,0,0.3); border-radius: 6px; padding: 6px 12px; font-size: 0.75rem; border: 1px solid rgba(255,255,255,0.1); }
+  
+  .layer-react { background: linear-gradient(135deg, #1e1b4b 0%, #1e293b 100%); border: 1px solid #6366f1; }
+  .layer-react .layer-title { color: #a78bfa; }
+  .layer-bridge { background: linear-gradient(135deg, #1a2e05 0%, #1e293b 100%); border: 1px solid #65a30d; }
+  .layer-bridge .layer-title { color: #a3e635; }
+  .layer-wasm { background: linear-gradient(135deg, #451a03 0%, #1e293b 100%); border: 1px solid #d97706; }
+  .layer-wasm .layer-title { color: #fbbf24; }
+  
+  .arrow-down { text-align: center; color: #64748b; font-size: 1.2rem; margin: 4px 0; letter-spacing: 8px; }
+  
+  /* File tree */
+  .file-tree { background: #0f172a; border-radius: 8px; padding: 16px; font-family: 'Cascadia Code', monospace; font-size: 0.75rem; line-height: 1.8; }
+  .file-tree .dir { color: #38bdf8; }
+  .file-tree .file-rs { color: #fbbf24; }
+  .file-tree .file-ts { color: #6366f1; }
+  .file-tree .file-tsx { color: #a78bfa; }
+  .file-tree .file-cfg { color: #94a3b8; }
+  .file-tree .comment { color: #475569; }
+  
+  /* Speedup chart */
+  .speed-chart { display: flex; align-items: end; gap: 24px; justify-content: center; padding: 20px; background: #0f172a; border-radius: 8px; margin-top: 12px; }
+  .speed-bar { text-align: center; }
+  .speed-bar .bar { width: 80px; border-radius: 6px 6px 0 0; margin: 0 auto 8px; display: flex; align-items: end; justify-content: center; padding-bottom: 8px; font-weight: 700; font-size: 0.85rem; }
+  .speed-bar .label { font-size: 0.75rem; color: #94a3b8; }
+  .speed-bar .sublabel { font-size: 0.65rem; color: #64748b; }
+  
+  /* Gate viz concept */
+  .gate-viz { display: flex; gap: 16px; align-items: center; justify-content: center; padding: 16px; background: #0f172a; border-radius: 8px; }
+  .gate-node { width: 60px; height: 40px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; border: 2px solid; }
+  .gate-and { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; }
+  .gate-or { background: #1e3a3f; border-color: #14b8a6; color: #5eead4; }
+  .gate-not { background: #3b1e3f; border-color: #a855f7; color: #d8b4fe; }
+  .gate-wire { width: 30px; height: 2px; background: #64748b; position: relative; }
+  .gate-wire.active { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+  
+  .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin-bottom: 16px; }
+  .card h3 { color: #38bdf8; margin-bottom: 10px; }
+  
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid2, .compare { grid-template-columns: 1fr; } }
+  
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+  .badge-green { background: #064e3b; color: #34d399; }
+  .badge-yellow { background: #451a03; color: #fbbf24; }
+  
+  .note { background: #1a1a2e; border-left: 3px solid #38bdf8; padding: 12px 16px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.82rem; color: #cbd5e1; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>🏗️ Hybrid Architecture: Rust/WASM Core + React Frontend</h1>
+<p class="subtitle">The best path forward for GateStack — educational visualization meets real performance</p>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">📊 Side-by-Side: Your Current Gate-Level vs Behavioral Approach</div>
+  
+  <div class="compare">
+    <div class="compare-panel left">
+      <h3>🔴 Current: Full Gate-Level (C#)</h3>
+      <p style="font-size:0.78rem; color:#94a3b8; margin-bottom:12px;">Every OR gate is built from NOT + NAND. Beautiful to understand, but extremely expensive to execute.</p>
+      
+      <pre><span class="comment">// Your OrGate — creates 2 NotGates + 1 NandGate</span>
+<span class="keyword">public class</span> <span class="type">OrGate</span> {
+  <span class="keyword">private</span> NotGate[] _notGates = <span class="keyword">new</span> NotGate[<span class="number">2</span>];
+  <span class="keyword">private</span> NandGate _nandGate;
+  
+  <span class="keyword">public void</span> <span class="fn">Update</span>(<span class="type">bool</span> a, <span class="type">bool</span> b) {
+    _notGates[<span class="number">0</span>].Update(a);
+    _notGates[<span class="number">1</span>].Update(b);
+    _nandGate.Update(
+      _notGates[<span class="number">0</span>].OBit, 
+      _notGates[<span class="number">1</span>].OBit);
+  }
+}</pre>
+
+      <pre><span class="comment">// Your Byte8 output — string alloc every read</span>
+<span class="keyword">public</span> <span class="type">Byte8</span> OByte8 {
+  <span class="keyword">get</span> {
+    <span class="type">string</span> result = <span class="string">""</span>;
+    <span class="keyword">foreach</span> (<span class="keyword">var</span> mg <span class="keyword">in</span> _memGates)
+      result += mg.Output ? <span class="string">"1"</span> : <span class="string">"0"</span>;
+    <span class="keyword">return new</span> <span class="type">Byte8</span>(result); <span class="comment">// parse again!</span>
+  }
+}</pre>
+
+      <div class="metric">
+        <span class="metric-icon">🐌</span>
+        <div>
+          <div class="metric-value bad">~90,000+ objects</div>
+          <div class="metric-label">Created at startup for RAM256 alone</div>
+        </div>
+      </div>
+      <div class="metric">
+        <span class="metric-icon">🗑️</span>
+        <div>
+          <div class="metric-value bad">~100K string allocs / cycle</div>
+          <div class="metric-label">GC pressure from Byte8 string building</div>
+        </div>
+      </div>
+      <div class="metric">
+        <span class="metric-icon">⏱️</span>
+        <div>
+          <div class="metric-value bad">~4 Hz max</div>
+          <div class="metric-label">Limited by DispatcherTimer + object overhead</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="compare-panel right">
+      <h3>🟢 Behavioral Core (Rust/WASM)</h3>
+      <p style="font-size:0.78rem; color:#94a3b8; margin-bottom:12px;">Same logical behavior, but uses native bitwise operations. The UI still shows gates visually.</p>
+
+      <pre><span class="comment">// Behavioral ALU — one function, zero allocations</span>
+<span class="keyword">pub fn</span> <span class="fn">alu_execute</span>(
+  a: <span class="type">u8</span>, b: <span class="type">u8</span>, op: <span class="type">AluOp</span>, carry: <span class="type">bool</span>
+) -> <span class="type">AluResult</span> {
+  <span class="keyword">match</span> op {
+    AluOp::Add => {
+      <span class="keyword">let</span> sum = a <span class="keyword">as</span> <span class="type">u16</span> + b <span class="keyword">as</span> <span class="type">u16</span> + carry <span class="keyword">as</span> <span class="type">u16</span>;
+      AluResult { value: sum <span class="keyword">as</span> <span class="type">u8</span>, carry: sum > <span class="number">0xFF</span> }
+    }
+    AluOp::And => AluResult { value: a & b, .. },
+    AluOp::Or  => AluResult { value: a | b, .. },
+    AluOp::Xor => AluResult { value: a ^ b, .. },
+    AluOp::Not => AluResult { value: !a, .. },
+    AluOp::Shl => AluResult { value: a << <span class="number">1</span>, .. },
+    AluOp::Shr => AluResult { value: a >> <span class="number">1</span>, .. },
+  }
+}</pre>
+
+      <pre><span class="comment">// RAM — just a byte array, O(1) access</span>
+<span class="keyword">pub struct</span> <span class="type">Ram</span> {
+  data: [<span class="type">u8</span>; <span class="number">256</span>],  <span class="comment">// 256 bytes, that's it</span>
+  mar: <span class="type">u8</span>,
+}
+<span class="keyword">impl</span> <span class="type">Ram</span> {
+  <span class="keyword">pub fn</span> <span class="fn">read</span>(&<span class="keyword">self</span>) -> <span class="type">u8</span> {
+    <span class="keyword">self</span>.data[<span class="keyword">self</span>.mar <span class="keyword">as</span> <span class="type">usize</span>]
+  }
+  <span class="keyword">pub fn</span> <span class="fn">write</span>(&<span class="keyword">mut self</span>, val: <span class="type">u8</span>) {
+    <span class="keyword">self</span>.data[<span class="keyword">self</span>.mar <span class="keyword">as</span> <span class="type">usize</span>] = val;
+  }
+}</pre>
+
+      <div class="metric">
+        <span class="metric-icon">🚀</span>
+        <div>
+          <div class="metric-value good">~300 bytes total</div>
+          <div class="metric-label">Entire computer state fits in L1 cache</div>
+        </div>
+      </div>
+      <div class="metric">
+        <span class="metric-icon">♻️</span>
+        <div>
+          <div class="metric-value good">Zero allocations per cycle</div>
+          <div class="metric-label">No GC, no strings, pure stack operations</div>
+        </div>
+      </div>
+      <div class="metric">
+        <span class="metric-icon">⏱️</span>
+        <div>
+          <div class="metric-value good">~50M+ Hz achievable</div>
+          <div class="metric-label">Run millions of instructions, render at 60fps</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="speed-chart">
+    <div class="speed-bar">
+      <div class="bar" style="height: 20px; background: linear-gradient(#f87171, #991b1b);">4</div>
+      <div class="label">Current C#</div>
+      <div class="sublabel">Gate-level + Timer</div>
+    </div>
+    <div class="speed-bar">
+      <div class="bar" style="height: 60px; background: linear-gradient(#fbbf24, #92400e);">~50K</div>
+      <div class="label">JS Behavioral</div>
+      <div class="sublabel">TypeScript only</div>
+    </div>
+    <div class="speed-bar">
+      <div class="bar" style="height: 120px; background: linear-gradient(#a78bfa, #4c1d95);">~500K</div>
+      <div class="label">C# Behavioral</div>
+      <div class="sublabel">.NET 8 optimized</div>
+    </div>
+    <div class="speed-bar">
+      <div class="bar" style="height: 240px; background: linear-gradient(#4ade80, #065f46);">~50M</div>
+      <div class="label">Rust/WASM</div>
+      <div class="sublabel">Behavioral core</div>
+    </div>
+    <div style="position:absolute; margin-left: 520px; margin-top: -16px; font-size:0.7rem; color:#64748b;">Instructions/sec (approx)</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">🏛️ The Hybrid Architecture</div>
+  
+  <div class="arch-box">
+    <div class="layer layer-react">
+      <div class="layer-title">🎨 React Frontend (TypeScript)</div>
+      <div class="layer-items">
+        <div class="layer-item">Live Register Display</div>
+        <div class="layer-item">Memory Hex Viewer</div>
+        <div class="layer-item">Gate-Level Diagram (SVG)</div>
+        <div class="layer-item">Signal Trace / Oscilloscope</div>
+        <div class="layer-item">Assembly Editor + Assembler</div>
+        <div class="layer-item">Step / Run / Pause Controls</div>
+        <div class="layer-item">Breakpoints</div>
+        <div class="layer-item">Clock Speed Slider</div>
+      </div>
+    </div>
+    
+    <div class="arrow-down">▼ ▼ ▼ ▼ ▼</div>
+    
+    <div class="layer layer-bridge">
+      <div class="layer-title">🔌 Bridge Layer (wasm-bindgen)</div>
+      <div class="layer-items">
+        <div class="layer-item">get_cpu_state() → JSON</div>
+        <div class="layer-item">get_memory_slice(start, len)</div>
+        <div class="layer-item">step() / run(n_cycles)</div>
+        <div class="layer-item">load_program(bytes[])</div>
+        <div class="layer-item">set_breakpoint(addr)</div>
+        <div class="layer-item">get_bus_signals() → visual state</div>
+        <div class="layer-item">get_alu_state() → gate activity</div>
+      </div>
+    </div>
+    
+    <div class="arrow-down">▼ ▼ ▼ ▼ ▼</div>
+    
+    <div class="layer layer-wasm">
+      <div class="layer-title">⚙️ Rust/WASM Simulation Core</div>
+      <div class="layer-items">
+        <div class="layer-item">CPU (registers, PC, flags)</div>
+        <div class="layer-item">ALU (bitwise behavioral)</div>
+        <div class="layer-item">RAM [u8; 256]</div>
+        <div class="layer-item">Control Section (microcode)</div>
+        <div class="layer-item">Clock / Stepper (state machine)</div>
+        <div class="layer-item">Instruction Decoder</div>
+        <div class="layer-item">Bus Model</div>
+        <div class="layer-item">Signal Trace Buffer</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="note">
+    <strong>Key insight:</strong> The Rust core computes everything at max speed. After each step (or batch of steps), 
+    it exposes a snapshot of <em>all internal signals</em> — which registers are enabled, what the ALU is doing, 
+    bus values, control signals. The React frontend reads this snapshot and renders a beautiful gate-level visualization 
+    that <em>looks</em> like the simulation is running gate-by-gate, even though the core is behavioral.
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">🎯 The "Best of Both Worlds" Trick</div>
+  
+  <div class="card">
+    <h3>How the Visual Gate Layer Works</h3>
+    <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6; margin-bottom:16px;">
+      When you step one instruction, the Rust core emits a <strong>signal trace</strong> — a record of every 
+      control signal, bus value, and register change that happened during that cycle. The React frontend 
+      animates this trace as if gates are firing one by one:
+    </p>
+    
+    <div class="gate-viz">
+      <div style="text-align:center; font-size:0.7rem; color:#94a3b8;">
+        R1<br>
+        <span style="color:#4ade80; font-weight:700;">0x42</span>
+      </div>
+      <div class="gate-wire active"></div>
+      <div class="gate-node gate-and">AND</div>
+      <div class="gate-wire active"></div>
+      <div class="gate-node gate-or">OR</div>
+      <div class="gate-wire active"></div>
+      <div style="text-align:center; font-size:0.7rem; color:#94a3b8;">
+        BUS<br>
+        <span style="color:#4ade80; font-weight:700;">→ ALU</span>
+      </div>
+      <div class="gate-wire active"></div>
+      <div class="gate-node gate-and">ADD</div>
+      <div class="gate-wire active"></div>
+      <div style="text-align:center; font-size:0.7rem; color:#94a3b8;">
+        ACC<br>
+        <span style="color:#fbbf24; font-weight:700;">0x84</span>
+      </div>
+    </div>
+    
+    <p style="font-size:0.78rem; color:#64748b; margin-top:12px; text-align:center;">
+      ↑ This visualization is driven by the signal trace, not by actual gate objects
+    </p>
+  </div>
+  
+  <div class="grid2">
+    <div class="card">
+      <h3>🔬 Single-Step Mode</h3>
+      <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+        Step through one instruction at a time. See <em>every micro-operation</em>: 
+        fetch → decode → execute. The UI animates data flowing through gates, buses lighting up, 
+        registers loading. Slow enough to learn, rich enough to understand.
+      </p>
+      <div style="margin-top:8px;">
+        <span class="badge badge-green">Educational</span>
+        <span class="badge badge-yellow">~60fps animation</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🚀 Run Mode</h3>
+      <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+        Execute thousands or millions of cycles per frame. The UI shows a live dashboard: 
+        register values updating, memory heatmap, instruction counter climbing, 
+        output display showing results. Fast enough to run real programs.
+      </p>
+      <div style="margin-top:8px;">
+        <span class="badge badge-green">Performance</span>
+        <span class="badge badge-yellow">~50M cycles/sec</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">📁 Proposed Project Structure</div>
+  
+  <div class="file-tree">
+<span class="dir">simple-computer/</span>
+├── <span class="dir">core/</span>                     <span class="comment"># Rust simulation engine</span>
+│   ├── <span class="file-cfg">Cargo.toml</span>
+│   └── <span class="dir">src/</span>
+│       ├── <span class="file-rs">lib.rs</span>            <span class="comment"># WASM entry point + bindings</span>
+│       ├── <span class="file-rs">cpu.rs</span>            <span class="comment"># CPU struct: registers, PC, flags</span>
+│       ├── <span class="file-rs">alu.rs</span>            <span class="comment"># ALU: behavioral add/sub/and/or/xor/shift</span>
+│       ├── <span class="file-rs">memory.rs</span>         <span class="comment"># RAM [u8; 256] + MAR</span>
+│       ├── <span class="file-rs">control.rs</span>        <span class="comment"># Control section: microcode state machine</span>
+│       ├── <span class="file-rs">bus.rs</span>            <span class="comment"># Bus model: who drives, who reads</span>
+│       ├── <span class="file-rs">instruction.rs</span>    <span class="comment"># Instruction set definition + decoder</span>
+│       ├── <span class="file-rs">trace.rs</span>          <span class="comment"># Signal trace recorder for visualization</span>
+│       └── <span class="file-rs">computer.rs</span>       <span class="comment"># Top-level: wire everything together</span>
+│
+├── <span class="dir">web/</span>                      <span class="comment"># React frontend</span>
+│   ├── <span class="file-cfg">package.json</span>
+│   ├── <span class="file-cfg">vite.config.ts</span>
+│   └── <span class="dir">src/</span>
+│       ├── <span class="file-ts">main.tsx</span>
+│       ├── <span class="file-ts">wasm-bridge.ts</span>   <span class="comment"># Load + call WASM functions</span>
+│       ├── <span class="dir">components/</span>
+│       │   ├── <span class="file-tsx">CpuView.tsx</span>       <span class="comment"># Register display panel</span>
+│       │   ├── <span class="file-tsx">MemoryView.tsx</span>    <span class="comment"># Hex dump + heatmap</span>
+│       │   ├── <span class="file-tsx">AluView.tsx</span>       <span class="comment"># ALU gate diagram (animated SVG)</span>
+│       │   ├── <span class="file-tsx">BusView.tsx</span>       <span class="comment"># Bus + data flow animation</span>
+│       │   ├── <span class="file-tsx">ControlView.tsx</span>   <span class="comment"># Control signals + stepper state</span>
+│       │   ├── <span class="file-tsx">CodeEditor.tsx</span>    <span class="comment"># Assembly editor with syntax highlight</span>
+│       │   ├── <span class="file-tsx">Toolbar.tsx</span>       <span class="comment"># Step / Run / Pause / Reset / Speed</span>
+│       │   └── <span class="file-tsx">SignalTrace.tsx</span>   <span class="comment"># Oscilloscope-style signal viewer</span>
+│       └── <span class="dir">hooks/</span>
+│           ├── <span class="file-ts">useComputer.ts</span>    <span class="comment"># Core state management hook</span>
+│           └── <span class="file-ts">useAnimation.ts</span>   <span class="comment"># Step animation timing</span>
+│
+├── <span class="dir">assembler/</span>                <span class="comment"># Assembly language tools (TS)</span>
+│   ├── <span class="file-ts">parser.ts</span>            <span class="comment"># Parse assembly text</span>
+│   ├── <span class="file-ts">assembler.ts</span>         <span class="comment"># Assemble to machine code bytes</span>
+│   └── <span class="file-ts">instructions.ts</span>      <span class="comment"># Instruction set definitions</span>
+│
+└── <span class="file-cfg">README.md</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">🗺️ Implementation Roadmap</div>
+  
+  <div style="position:relative; padding-left: 30px;">
+    <div style="position:absolute; left:11px; top:0; bottom:0; width:2px; background:#334155;"></div>
+    
+    <div style="position:relative; margin-bottom:20px;">
+      <div style="position:absolute; left:-25px; top:4px; width:14px; height:14px; border-radius:50%; background:#4ade80; border:2px solid #0a0e1a;"></div>
+      <div class="card">
+        <h3>Phase 1: Rust Core — CPU + ALU + RAM <span class="badge badge-green">Week 1-2</span></h3>
+        <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+          Port your computer's logic to behavioral Rust. Define CPU struct with R0-R3, ACC, IAR, IR, TMP, flags. 
+          Implement ALU with all 8 operations. RAM as [u8; 256]. Write comprehensive tests (you already have tests — great!). 
+          Compile to WASM with wasm-pack.
+        </p>
+      </div>
+    </div>
+    
+    <div style="position:relative; margin-bottom:20px;">
+      <div style="position:absolute; left:-25px; top:4px; width:14px; height:14px; border-radius:50%; background:#38bdf8; border:2px solid #0a0e1a;"></div>
+      <div class="card">
+        <h3>Phase 2: Control Section + Instruction Set <span class="badge badge-yellow">Week 2-3</span></h3>
+        <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+          Implement the control section as a microcode state machine (your Stepper7 becomes a simple counter). 
+          Define the instruction set: LOAD, STORE, ADD, SUB, JMP, etc. Build the fetch-decode-execute cycle. 
+          Add signal trace recording for every micro-operation.
+        </p>
+      </div>
+    </div>
+    
+    <div style="position:relative; margin-bottom:20px;">
+      <div style="position:absolute; left:-25px; top:4px; width:14px; height:14px; border-radius:50%; background:#a78bfa; border:2px solid #0a0e1a;"></div>
+      <div class="card">
+        <h3>Phase 3: React Dashboard <span class="badge badge-yellow">Week 3-4</span></h3>
+        <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+          Build the visualization layer: register panel, memory hex view, control signal display, 
+          toolbar with step/run/pause. Wire up to WASM bridge. Get single-stepping working with 
+          live state updates. Dark theme (obviously).
+        </p>
+      </div>
+    </div>
+    
+    <div style="position:relative; margin-bottom:20px;">
+      <div style="position:absolute; left:-25px; top:4px; width:14px; height:14px; border-radius:50%; background:#fbbf24; border:2px solid #0a0e1a;"></div>
+      <div class="card">
+        <h3>Phase 4: Assembly Editor + Gate Animations <span class="badge badge-yellow">Week 4-6</span></h3>
+        <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+          Add the assembly language editor with syntax highlighting and error markers. 
+          Build the animated SVG gate diagrams that light up based on signal traces. 
+          Implement the oscilloscope-style signal trace viewer. Add breakpoints.
+        </p>
+      </div>
+    </div>
+    
+    <div style="position:relative;">
+      <div style="position:absolute; left:-25px; top:4px; width:14px; height:14px; border-radius:50%; background:#f472b6; border:2px solid #0a0e1a;"></div>
+      <div class="card">
+        <h3>Phase 5: Polish + Electron Wrapper <span class="badge badge-yellow">Week 6-8</span></h3>
+        <p style="font-size:0.82rem; color:#94a3b8; line-height:1.6;">
+          Optional Electron wrapper for desktop app (you know this well!). 
+          Save/load programs. Example programs (fibonacci, sort, etc). 
+          Performance profiling and optimization. Documentation.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-title">🧰 Toolchain You'll Need</div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Rust / WASM Side</h3>
+      <p style="font-size:0.82rem; color:#94a3b8; line-height:1.8;">
+        <strong>rustup</strong> — Rust toolchain installer<br>
+        <strong>wasm-pack</strong> — Builds Rust → WASM + JS bindings<br>
+        <strong>wasm-bindgen</strong> — Rust↔JS interop<br>
+        <strong>cargo test</strong> — Unit tests for the core<br>
+      </p>
+    </div>
+    <div class="card">
+      <h3>React / Web Side</h3>
+      <p style="font-size:0.82rem; color:#94a3b8; line-height:1.8;">
+        <strong>Vite</strong> — Fast bundler with WASM support<br>
+        <strong>React 18+</strong> — UI framework<br>
+        <strong>TypeScript</strong> — Type safety<br>
+        <strong>Tailwind CSS</strong> — Styling<br>
+        <strong>vite-plugin-wasm</strong> — WASM integration<br>
+      </p>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
