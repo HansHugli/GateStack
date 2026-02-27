@@ -23,6 +23,3 @@ Thumbs.db
 *.snap
 web/main.mjs
 web/preload.cjs
-
-# App specific
-nul

@@ -92,6 +92,7 @@ export interface IComputer {
   getInputRequest(): { register: number } | null;
   provideInput(value: number): void;
   echoToConsole(text: string): void;
+  setSkipVsync(skip: boolean): void;
 }
 
 // ── Opcodes ─────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ class MockComputer implements IComputer {
   private breakpoints = new Set<number>();
   private consoleBuffer: number[] = [];
   private inputWaiting: { register: number; address: number } | null = null;
+  private skipVsync = false;
 
   // Read 16-bit little-endian from memory
   private read16(addr: number): number {
@@ -456,7 +458,7 @@ class MockComputer implements IComputer {
         const mA = mem[(addr + 2) & 0xFFFF] | (mem[(addr + 3) & 0xFFFF] << 8);
         mem[mA & 0xFFFF] = r[rA] & 0xFF;
         // Vsync: break after frame flip
-        if (mA === 0xDFFF && executed > 0) {
+        if (mA === 0xDFFF && executed > 0 && !this.skipVsync) {
           this.state.cycle_count++;
           executed++;
           break;
@@ -630,6 +632,7 @@ class MockComputer implements IComputer {
       this.consoleBuffer.push(text.charCodeAt(i));
     }
   }
+  setSkipVsync(skip: boolean): void { this.skipVsync = skip; }
 }
 
 // ── Opcode name helper (exported for disassembly) ───────────────────────
@@ -642,7 +645,38 @@ export { instrSize };
 
 // ── Factory ─────────────────────────────────────────────────────────────
 
-export async function createComputer(): Promise<IComputer> {
+export type EngineType = 'wasm' | 'js';
+
+export interface EngineResult {
+  computer: IComputer;
+  engine: EngineType;
+  wasmAvailable: boolean;
+}
+
+export async function createComputer(preferred?: EngineType): Promise<EngineResult> {
+  let wasmAvailable = false;
+
+  // Check if WASM module exists
+  try {
+    await import('./wasm/gatestack_core.js');
+    wasmAvailable = true;
+  } catch (e) {
+    // WASM module not built
+  }
+
+  // Only create WASM if explicitly requested
+  if (preferred === 'wasm' && wasmAvailable) {
+    try {
+      const { tryCreateWasmComputer } = await import('./wasm-cpu');
+      const wasmComputer = await tryCreateWasmComputer();
+      if (wasmComputer) {
+        return { computer: wasmComputer, engine: 'wasm', wasmAvailable: true };
+      }
+    } catch (e) {
+      console.warn('Failed to create WASM engine:', e);
+    }
+  }
+
   console.log('🔧 GateStack 16-bit engine (JavaScript)');
-  return new MockComputer();
+  return { computer: new MockComputer(), engine: 'js', wasmAvailable };
 }

@@ -11,6 +11,8 @@ const SPEED_PRESETS = [
   { label: '10K', value: 10000 },
   { label: '100K', value: 100000 },
   { label: '1M', value: 1000000 },
+  { label: '10M', value: 10000000 },
+  { label: 'MAX', value: 100000000 },
 ];
 
 export default function Toolbar({ computer }: Props) {
@@ -18,7 +20,7 @@ export default function Toolbar({ computer }: Props) {
 
   const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const pct = parseInt(e.target.value);
-    const v = Math.round(Math.pow(10, pct / 16.67));  // 0-100 maps to 10^0 .. 10^6
+    const v = Math.round(Math.pow(10, pct / 12.5));  // 0-100 maps to 10^0 .. 10^8
     setSpeed(v);
     computer.setSpeed(v);
   };
@@ -28,8 +30,9 @@ export default function Toolbar({ computer }: Props) {
     computer.setSpeed(v);
   };
 
-  const sliderPos = Math.round(16.67 * Math.log10(Math.max(1, speed)));
+  const sliderPos = Math.round(12.5 * Math.log10(Math.max(1, speed)));
   const formatSpeed = (v: number) => {
+    if (v >= 100000000) return 'MAX';
     if (v >= 1000000) return `${(v / 1000000).toFixed(v >= 10000000 ? 0 : 1)}M`;
     if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}K`;
     return v.toString();
@@ -70,7 +73,13 @@ export default function Toolbar({ computer }: Props) {
       <div style={{ width: 1, height: 20, background: 'var(--border-subtle)', margin: '0 4px' }} />
 
       {/* Clock indicator */}
-      <ClockIndicator cycle={computer.state?.cycle_count ?? 0} isRunning={computer.isRunning} halted={computer.state?.halted ?? false} />
+      <ClockIndicator
+        cycle={computer.state?.cycle_count ?? 0}
+        isRunning={computer.isRunning}
+        halted={computer.state?.halted ?? false}
+        engineType={computer.engineType}
+        cyclesPerSec={computer.cyclesPerSec}
+      />
 
       {/* Speed */}
       <span style={{ fontSize: '0.62rem', color: 'var(--text-dim)', fontWeight: 600, letterSpacing: '0.8px', textTransform: 'uppercase' as const }}>
@@ -98,6 +107,24 @@ export default function Toolbar({ computer }: Props) {
       }}>
         {formatSpeed(speed)}/f
       </span>
+
+      {/* Engine toggle */}
+      {computer.wasmAvailable && (
+        <button
+          onClick={() => computer.switchEngine(computer.engineType === 'wasm' ? 'js' : 'wasm')}
+          title={`Engine: ${computer.engineType.toUpperCase()}. Click to switch.`}
+          style={{
+            padding: '1px 6px', fontSize: '0.58rem', fontFamily: 'var(--font-mono)',
+            fontWeight: 600, borderRadius: 3, cursor: 'pointer', transition: 'all 0.15s',
+            marginLeft: 4,
+            border: `1px solid ${computer.engineType === 'wasm' ? '#22d3ee40' : 'var(--border-subtle)'}`,
+            background: computer.engineType === 'wasm' ? 'rgba(34,211,238,0.1)' : 'transparent',
+            color: computer.engineType === 'wasm' ? '#22d3ee' : 'var(--text-dim)',
+          }}
+        >
+          {computer.engineType === 'wasm' ? '⚡ WASM' : '📜 JS'}
+        </button>
+      )}
 
       <div style={{ flex: 1 }} />
 
@@ -167,10 +194,16 @@ const CLOCK_STYLES = `
   }
 `;
 
-function ClockIndicator({ cycle, isRunning, halted }: {
-  cycle: number; isRunning: boolean; halted: boolean;
+function ClockIndicator({ cycle, isRunning, halted, engineType, cyclesPerSec }: {
+  cycle: number; isRunning: boolean; halted: boolean; engineType: string; cyclesPerSec: number;
 }) {
   const isOdd = cycle % 2 === 1;
+  const formatCps = (v: number) => {
+    if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
+    if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+    if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+    return v.toFixed(0);
+  };
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 5,
@@ -190,9 +223,12 @@ function ClockIndicator({ cycle, isRunning, halted }: {
       {/* Cycle count */}
       <span style={{
         fontSize: '0.6rem', fontFamily: 'var(--font-mono)',
-        color: '#f59e0b', fontWeight: 700, minWidth: 30,
+        color: '#f59e0b', fontWeight: 700, minWidth: 50,
       }}>
-        {cycle >= 1000 ? `${(cycle / 1000).toFixed(1)}K` : cycle}
+        {cycle >= 1e9 ? `${(cycle / 1e9).toFixed(1)}B`
+         : cycle >= 1e6 ? `${(cycle / 1e6).toFixed(1)}M`
+         : cycle >= 1e3 ? `${(cycle / 1e3).toFixed(1)}K`
+         : cycle}
       </span>
       <span style={{
         fontSize: '0.48rem', color: 'var(--text-dim)',
@@ -201,6 +237,15 @@ function ClockIndicator({ cycle, isRunning, halted }: {
       }}>
         CLK
       </span>
+      {/* Perf counter — only show when running */}
+      {isRunning && cyclesPerSec > 0 && (
+        <span style={{
+          fontSize: '0.52rem', fontFamily: 'var(--font-mono)',
+          color: '#94a3b8', fontWeight: 600, marginLeft: 2,
+        }}>
+          {formatCps(cyclesPerSec)}/s
+        </span>
+      )}
     </div>
   );
 }

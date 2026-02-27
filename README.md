@@ -10,25 +10,23 @@ Originally based on a gate-level C# implementation (SimpleComputer), redesigned 
 ┌─────────────────────────────────────────────────┐
 │            React Frontend (TypeScript)            │
 │  ┌────────┐ ┌────────┐ ┌─────┐ ┌────────────┐  │
-│  │CPU View│ │Mem Hex │ │ ALU │ │ Assembly   │  │
-│  │Regs/Flg│ │256-byte│ │ SVG │ │ Editor     │  │
+│  │CPU View│ │Mem Hex │ │Video│ │ Assembly   │  │
+│  │16 Regs │ │ 64 KB  │ │256² │ │ Editor     │  │
 │  └────┬───┘ └────┬───┘ └──┬──┘ └─────┬──────┘  │
 │       └──────────┴────────┴───────────┘          │
-│                    │ JSON                         │
+│                    │                              │
 ├────────────────────┼─────────────────────────────┤
 │              wasm-bindgen bridge                  │
 ├────────────────────┼─────────────────────────────┤
 │            Rust/WASM Core                        │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌───────┐ ┌───────┐  │
-│  │ CPU │ │ ALU │ │ RAM │ │Control│ │ Trace │  │
-│  │regs │ │8 ops│ │256B │ │decode │ │recorder│  │
-│  └─────┘ └─────┘ └─────┘ └───────┘ └───────┘  │
+│  ┌─────┐ ┌─────┐ ┌──────┐ ┌───────┐            │
+│  │ CPU │ │ ALU │ │64 KB │ │Control│            │
+│  │16reg│ │33 op│ │ RAM  │ │decode │            │
+│  └─────┘ └─────┘ └──────┘ └───────┘            │
 └─────────────────────────────────────────────────┘
 ```
 
 ## Quick Start (Mock Mode — No Rust Required)
-
->Note: Before you try to run this project, rename `server/db-sample.json` to `server/db.json`
 
 You can start developing the UI immediately without installing Rust:
 
@@ -98,7 +96,7 @@ rustup target add wasm32-unknown-unknown
 
 # 2. Build the WASM core
 cd core
-wasm-pack build --target web --out-dir ../web/src/wasm
+wasm-pack build --target bundler --out-dir ../web/src/wasm --release
 
 # 3. Install web dependencies
 cd ../web
@@ -116,15 +114,19 @@ This rebuilds WASM and starts the dev server.
 
 ## Features (v1.0)
 
-- **19-instruction ISA** — ALU ops, memory access, jumps, conditionals, I/O
+- **33-instruction ISA** — ALU ops (ADD, SUB, MUL, DIV, MOD, shifts, bitwise), memory access (LOAD, STORE, LDRI, STRI), jumps, conditionals, CALL/RET, I/O
+- **16-bit architecture** — 16 registers, 64KB RAM, 256×256 4bpp video display
+- **Dual engine** — Rust/WASM for speed, JavaScript fallback, switchable at runtime
 - **Console I/O** — `OUT` prints to terminal, `IN` reads user input with auto-resume
 - **Visual debugger** — step, run, pause, step-back (256-step undo), breakpoints
 - **Assembler** — two-pass with labels, hex/binary/decimal/char literals, comments
 - **Memory editor** — click any RAM cell to edit its value inline
 - **Signal trace** — oscilloscope-style register history waveforms
-- **18 sample programs** — from Hello World to Bubble Sort to interactive Adder
+- **Speed control** — 1 to MAX cycles/frame with time-budgeted execution
+- **Sample programs** — from Hello World to Bubble Sort to Mandelbrot renderer
 - **Export/Import** — save and load programs as JSON
 - **Help panel** — press `?` for inline ISA reference and keyboard shortcuts
+- **Desktop app** — Electron wrapper with native menus and keyboard shortcuts
 
 See [REFERENCE.md](REFERENCE.md) for full ISA documentation.
 
@@ -132,33 +134,32 @@ See [REFERENCE.md](REFERENCE.md) for full ISA documentation.
 
 ```
 gatestack/
-├── core/                    # Rust simulation engine
+├── core/                    # Rust WASM simulation engine
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # WASM entry + JS bindings
-│       ├── alu.rs           # ALU: ADD, SHR, SHL, NOT, AND, OR, XOR, CMP
-│       ├── cpu.rs           # CPU: registers, flags, instruction execution
-│       ├── memory.rs        # RAM [u8; 256] + MAR
-│       └── trace.rs         # Signal trace recorder for UI animation
+│       └── lib.rs           # Complete 16-bit CPU: 16 regs, 64KB RAM, 33 opcodes
 │
 ├── web/                     # React frontend
 │   ├── src/
 │   │   ├── main.tsx
 │   │   ├── assembler.ts     # Two-pass assembler
-│   │   ├── wasm-bridge.ts   # TypeScript types + mock computer
+│   │   ├── wasm-bridge.ts   # IComputer interface + JS engine + factory
+│   │   ├── wasm-cpu.ts      # WASM engine wrapper
+│   │   ├── wasm/            # wasm-pack output (generated)
 │   │   ├── components/
-│   │   │   ├── App.tsx      # Main dashboard layout + 18 samples
+│   │   │   ├── App.tsx      # Main dashboard layout + sample programs
 │   │   │   ├── CpuView.tsx  # Register & flag display
 │   │   │   ├── MemoryView.tsx # Hex dump with click-to-edit
+│   │   │   ├── VideoDisplay.tsx # 256×256 4bpp video renderer
 │   │   │   ├── AluView.tsx  # ALU gate diagram (animated SVG)
 │   │   │   ├── BusView.tsx  # Bus data flow visualization
-│   │   │   ├── Toolbar.tsx  # Step/Back/Run/Pause/Reset/Speed
+│   │   │   ├── Toolbar.tsx  # Step/Back/Run/Pause/Reset/Speed/Engine
 │   │   │   ├── CodeEditor.tsx # Assembly editor + disassembly + breakpoints
 │   │   │   ├── ConsoleView.tsx # Terminal-style I/O console
 │   │   │   ├── SignalTrace.tsx # Register oscilloscope waveforms
 │   │   │   └── HelpPanel.tsx  # Help overlay (ISA ref + shortcuts)
 │   │   └── hooks/
-│   │       └── useComputer.ts # React state management
+│   │       └── useComputer.ts # React state management + engine switching
 │   ├── electron/
 │   │   ├── main.mjs         # Electron main process
 │   │   └── preload.cjs      # Context bridge for IPC
@@ -180,28 +181,28 @@ gatestack/
 
 ## Mapping from Original C# Code
 
-| C# Class           | Rust Equivalent              | Notes                          |
-|---------------------|------------------------------|--------------------------------|
-| `AndGate`           | `&` operator                 | Native bitwise AND             |
-| `OrGate`            | `\|` operator                | Native bitwise OR              |
-| `XorGate`           | `^` operator                 | Native bitwise XOR             |
-| `NotGate`           | `!` operator                 | Native bitwise NOT             |
-| `NandGate`          | `!(a & b)`                   | Single expression              |
-| `FullAdder`         | `+` with carry check         | One addition                   |
-| `Adder8`            | `(a as u16) + (b as u16)`    | One addition                   |
-| `ALU8`              | `alu.rs: alu_execute()`      | ~20 lines, 8 operations       |
-| `Register8`         | `u8` field on CPU struct     | Just a number                  |
-| `ByteGate8`         | Not needed                   | Register = byte variable       |
-| `MemGate`           | Not needed                   | No gate-level latches          |
-| `Enabler8`          | If-statement in step logic   | Conditional bus read           |
-| `RAM256`            | `[u8; 256]`                  | 64KB vs ~90K objects      |
-| `RAMRegister8`      | Array index                  | `ram[addr]`                    |
-| `Decoder4x16`       | Array index                  | `ram[mar as usize]`            |
-| `Byte8`             | `u8`                         | Native 16-bit type              |
-| `ControlSection`    | `cpu.rs: step()` method      | State machine                  |
-| `Stepper7`          | Fetch/Decode/Execute phases  | Sequential logic               |
-| `Clock`             | `requestAnimationFrame`      | UI-driven timing               |
-| `Bus8_1`            | Variable assignment           | `bus = value`                  |
+| C# Class           | Current Equivalent             | Notes                          |
+|---------------------|-------------------------------|--------------------------------|
+| `AndGate`           | `&` operator                  | Native bitwise AND             |
+| `OrGate`            | `\|` operator                 | Native bitwise OR              |
+| `XorGate`           | `^` operator                  | Native bitwise XOR             |
+| `NotGate`           | `!` operator                  | Native bitwise NOT             |
+| `NandGate`          | `!(a & b)`                    | Single expression              |
+| `FullAdder`         | `+` with carry check          | One addition                   |
+| `Adder8`            | `u32` add + mask              | 16-bit with overflow detect    |
+| `ALU8`              | `run()` match block           | 33 operations                  |
+| `Register8`         | `u16` field / `self.r[i]`     | 16-bit registers               |
+| `ByteGate8`         | Not needed                    | Register = variable            |
+| `MemGate`           | Not needed                    | No gate-level latches          |
+| `Enabler8`          | If-statement in execution     | Conditional bus read           |
+| `RAM256`            | `Vec<u8>` / `Uint8Array`      | 64KB                           |
+| `RAMRegister8`      | Array index                   | `mem[addr]`                    |
+| `Decoder4x16`       | Array index                   | `mem[addr as usize]`           |
+| `Byte8`             | `u16` / `number`              | Native 16-bit type             |
+| `ControlSection`    | `run()` loop                  | Inline decode + execute        |
+| `Stepper7`          | Sequential execution          | No micro-steps in fast path    |
+| `Clock`             | `requestAnimationFrame`       | UI-driven timing               |
+| `Bus8_1`            | Variable assignment           | `r[ra] = result`              |
 
 ## Inspired By
 

@@ -12,12 +12,24 @@ export default defineConfig({
   server: {
     port: 3000,
     strictPort: true,
+    fs: {
+      // Allow serving wasm files
+      allow: ['..'],
+    },
+  },
+
+  optimizeDeps: {
+    // Don't pre-bundle the wasm-pack output
+    exclude: ['gatestack-core'],
   },
 
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // Ensure assets use relative paths
     assetsDir: 'assets',
+    // Ensure WASM files are treated as assets
+    rollupOptions: {
+      external: [],
+    },
   },
 });

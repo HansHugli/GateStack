@@ -353,6 +353,448 @@ sp_wr:  STRI R11, R1
         RET`;
 }
 
+// ── Mandelbrot Zoom + Color Cycling Animation ──────────────────────────
+function generateMandelbrotAnim(): string {
+  return `; Mandelbrot Zoom + Color Cycling Animation
+; Renders fractal, cycles colors with delay, zooms toward
+; Seahorse Valley (-0.75, 0.1), repeats.
+; Best at 10M speed!
+;
+; 8.8 fixed-point: 1.0 = 256
+; Zoom params at 0x7F00-0x7F09:
+;   0x7F00-01: re_min  (16-bit LE)
+;   0x7F02-03: im_min  (16-bit LE)
+;   0x7F04-05: re_step (16-bit LE)
+;   0x7F06-07: im_step (16-bit LE)
+;   0x7F08:    zoom_count
+
+; ── Init constants ──
+        DATA R12, 0x8000
+        DATA R13, 128
+        DATA R14, 1
+        DATA R15, 0
+
+; ── Initial zoom: standard Mandelbrot view centered on (-0.745, 0.186) ──
+; re_step = 6, im_step = 5  (standard ~3x2.5 unit view)
+; re_min = 65345 - 6*128 = 64577 = 0xFC41
+        DATA R0, 65
+        STORE R0, 0x7F00
+        DATA R0, 252
+        STORE R0, 0x7F01
+; im_min = 48 - 5*128 = -592 = 0xFDB0 (64944)
+        DATA R0, 176
+        STORE R0, 0x7F02
+        DATA R0, 253
+        STORE R0, 0x7F03
+; re_step = 6
+        DATA R0, 6
+        STORE R0, 0x7F04
+        DATA R0, 0
+        STORE R0, 0x7F05
+; im_step = 5
+        DATA R0, 5
+        STORE R0, 0x7F06
+        DATA R0, 0
+        STORE R0, 0x7F07
+; zoom_count = 0
+        DATA R0, 0
+        STORE R0, 0x7F08
+
+; ══════════════════════════════
+; MAIN LOOP
+; ══════════════════════════════
+main_loop:
+        CALL render_fractal
+        ; CALL color_cycle   ; disabled for debugging
+; Check if NEXT zoom would bring step to 1 or 0
+; current_step * 7 / 8: if step <= 2, next would be <=1
+        LOAD R0, 0x7F04
+        DATA R11, 3
+        CMP  R0, R11
+        JA   do_zoom          ; step > 3: safe to zoom
+        JMP  screensaver      ; step <= 3: stop (next zoom gives <=2 which loses detail)
+do_zoom:
+        CALL zoom_in
+        JMP  main_loop
+
+screensaver:
+; Final zoom is done — halt on last good frame
+        ; CALL color_cycle   ; disabled for debugging
+        HALT
+
+; ══════════════════════════════
+; render_fractal — full 256x256 render
+; ══════════════════════════════
+render_fractal:
+        PUSH R2
+        PUSH R3
+; Load im_min -> R7
+        LOAD R0, 0x7F02
+        LOAD R1, 0x7F03
+        SHL8 R1
+        MOV  R7, R1
+        ADD  R7, R0
+
+        DATA R5, 0          ; py = 0
+
+rf_yloop:
+        DATA R4, 0          ; px = 0
+; Load re_min -> R6
+        LOAD R0, 0x7F00
+        LOAD R1, 0x7F01
+        SHL8 R1
+        MOV  R6, R1
+        ADD  R6, R0
+
+rf_xloop:
+        DATA R8, 0          ; zr = 0
+        DATA R9, 0          ; zi = 0
+        DATA R10, 0         ; iter = 0
+
+rf_iter:
+        MOV  R0, R8
+        MOV  R1, R8
+        CALL fpmul
+        MOV  R2, R0          ; R2 = zr^2
+
+        MOV  R0, R9
+        MOV  R1, R9
+        CALL fpmul
+        MOV  R3, R0          ; R3 = zi^2
+
+        ADD  R0, R2           ; zr^2 + zi^2
+        DATA R11, 1024
+        CMP  R0, R11
+        JA   rf_esc
+
+        ADD  R10, R14
+        DATA R11, 16
+        CMP  R10, R11
+        JE   rf_in
+
+        MOV  R0, R8
+        MOV  R1, R9
+        CALL fpmul
+        SHL  R0
+        ADD  R0, R7           ; new_zi
+
+        SUB  R2, R3
+        ADD  R2, R6           ; new_zr
+
+        MOV  R8, R2
+        MOV  R9, R0
+        JMP  rf_iter
+
+rf_esc:
+        MOV  R0, R10
+        DATA R1, 15
+        MOD  R0, R1
+        ADD  R0, R14
+        JMP  rf_plot
+
+rf_in:  DATA R0, 0
+
+rf_plot:
+        PUSH R0
+        MOV  R1, R5
+        MUL  R1, R13
+        MOV  R3, R4
+        SHR  R3
+        ADD  R1, R3
+        ADD  R1, R12
+        LDRI R11, R1
+        MOV  R3, R4
+        AND  R3, R14
+        POP  R0
+        CMP  R3, R15
+        JE   rf_even
+        DATA R3, 0xF0
+        AND  R11, R3
+        DATA R3, 0x0F
+        AND  R0, R3
+        OR   R11, R0
+        JMP  rf_wr
+rf_even:
+        DATA R3, 0x0F
+        AND  R11, R3
+        AND  R0, R3
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        SHL  R0
+        OR   R11, R0
+rf_wr:  STRI R11, R1
+
+        ADD  R4, R14
+; cr += re_step
+        LOAD R0, 0x7F04
+        LOAD R1, 0x7F05
+        SHL8 R1
+        OR   R0, R1
+        ADD  R6, R0
+        DATA R11, 256
+        CMP  R4, R11
+        JE   rf_nrow
+        JMP  rf_xloop
+
+rf_nrow:
+        ADD  R5, R14
+; ci += im_step
+        LOAD R0, 0x7F06
+        LOAD R1, 0x7F07
+        SHL8 R1
+        OR   R0, R1
+        ADD  R7, R0
+        DATA R11, 256
+        CMP  R5, R11
+        JE   rf_done
+        DATA R0, 0
+        STORE R0, 0xDFFF     ; vsync per row
+        JMP  rf_yloop
+
+rf_done:
+        DATA R0, 0
+        STORE R0, 0xDFFF
+        POP  R3
+        POP  R2
+        RET
+
+; ══════════════════════════════
+; color_cycle — cycle palette 10 times with delay
+; Delay loop burns ~250K cycles between frames.
+; At 10M/s = ~50ms pause. At 1M/s = ~500ms pause.
+; ══════════════════════════════
+color_cycle:
+        PUSH R2
+        PUSH R3
+        DATA R2, 0           ; cycle counter
+
+cc_loop:
+; ── Delay loop: ~250K cycles (250 * 100 * ~10 instr) ──
+; At 10M/s = ~25ms pause, at 1M/s = ~250ms
+        DATA R8, 0
+cc_d1:  DATA R9, 0
+cc_d2:  ADD  R9, R14
+        DATA R11, 250
+        CMP  R9, R11
+        JE   cc_d3
+        JMP  cc_d2
+cc_d3:  ADD  R8, R14
+        DATA R11, 100
+        CMP  R8, R11
+        JE   cc_go
+        JMP  cc_d1
+
+cc_go:
+; ── Walk VRAM, increment non-zero nibbles ──
+        DATA R0, 0x8000      ; VRAM pointer
+        DATA R3, 0           ; byte counter
+
+cc_byte:
+        LDRI R8, R0
+; High nibble
+        MOV  R9, R8
+        SHR  R9
+        SHR  R9
+        SHR  R9
+        SHR  R9
+        CMP  R9, R15
+        JE   cc_lo
+        ADD  R9, R14
+        DATA R11, 16
+        CMP  R9, R11
+        JA   cc_hw
+        JE   cc_hw
+        JMP  cc_lo
+cc_hw:  DATA R9, 1
+cc_lo:
+; Low nibble
+        MOV  R10, R8
+        DATA R11, 0x0F
+        AND  R10, R11
+        CMP  R10, R15
+        JE   cc_comb
+        ADD  R10, R14
+        DATA R11, 16
+        CMP  R10, R11
+        JA   cc_lw
+        JE   cc_lw
+        JMP  cc_comb
+cc_lw:  DATA R10, 1
+cc_comb:
+        SHL  R9
+        SHL  R9
+        SHL  R9
+        SHL  R9
+        OR   R9, R10
+        STRI R9, R0
+
+        ADD  R0, R14
+        ADD  R3, R14
+        DATA R11, 0x8000
+        CMP  R3, R11
+        JE   cc_frame
+        JMP  cc_byte
+
+cc_frame:
+        DATA R0, 0
+        STORE R0, 0xDFFF     ; vsync
+        ADD  R2, R14
+        DATA R11, 10
+        CMP  R2, R11
+        JE   cc_done
+        JMP  cc_loop
+
+cc_done:
+        POP  R3
+        POP  R2
+        RET
+
+; ══════════════════════════════
+; zoom_in — shrink step by 7/8, recompute min from target center
+; Target: (-0.745, 0.186) — edge of Seahorse Valley spiral
+; In 8.8: target_re = -191 = 0xFF41 (65345), target_im = 48 = 0x0030
+; Method: re_min = target_re - step * 128
+;         im_min = target_im - step * 128
+; This keeps the target perfectly centered at all zoom levels.
+; ══════════════════════════════
+zoom_in:
+        PUSH R2
+        PUSH R3
+
+; ── Shrink re_step by 7/8 ──
+        LOAD R0, 0x7F04
+        LOAD R1, 0x7F05
+        SHL8 R1
+        OR   R0, R1           ; R0 = re_step
+        DATA R1, 7
+        MUL  R0, R1
+        SHR  R0
+        SHR  R0
+        SHR  R0               ; R0 = new re_step
+        MOV  R2, R0           ; R2 = new re_step (save)
+        MOV  R1, R0
+        DATA R11, 0xFF
+        AND  R1, R11
+        STORE R1, 0x7F04
+        MOV  R1, R0
+        SHR8 R1
+        STORE R1, 0x7F05
+
+; ── Shrink im_step by 7/8 ──
+        LOAD R0, 0x7F06
+        LOAD R1, 0x7F07
+        SHL8 R1
+        OR   R0, R1
+        DATA R1, 7
+        MUL  R0, R1
+        SHR  R0
+        SHR  R0
+        SHR  R0               ; R0 = new im_step
+        MOV  R3, R0           ; R3 = new im_step (save)
+        MOV  R1, R0
+        DATA R11, 0xFF
+        AND  R1, R11
+        STORE R1, 0x7F06
+        MOV  R1, R0
+        SHR8 R1
+        STORE R1, 0x7F07
+
+; ── Compute re_min = target_re - re_step * 128 ──
+; target_re = -0.745 in 8.8 = -191 = 0xFF41 (65345 unsigned)
+; half_width = re_step * 128
+        MOV  R0, R2           ; re_step
+        DATA R1, 128
+        MUL  R0, R1           ; R0 = re_step * 128 (half width in 8.8)
+        DATA R1, 65345        ; target_re = 0xFF41
+        SUB  R1, R0           ; R1 = target_re - half_width = re_min
+        MOV  R0, R1
+        DATA R11, 0xFF
+        AND  R0, R11
+        STORE R0, 0x7F00
+        MOV  R0, R1
+        SHR8 R0
+        STORE R0, 0x7F01
+
+; ── Compute im_min = target_im - im_step * 128 ──
+; target_im = 0.186 in 8.8 = 48 = 0x0030
+        MOV  R0, R3           ; im_step
+        DATA R1, 128
+        MUL  R0, R1           ; R0 = im_step * 128 (half height in 8.8)
+        DATA R1, 48           ; target_im = 0x0030
+        SUB  R1, R0           ; R1 = target_im - half_height = im_min
+        MOV  R0, R1
+        DATA R11, 0xFF
+        AND  R0, R11
+        STORE R0, 0x7F02
+        MOV  R0, R1
+        SHR8 R0
+        STORE R0, 0x7F03
+
+; ── Increment zoom count ──
+        LOAD R0, 0x7F08
+        ADD  R0, R14
+        STORE R0, 0x7F08
+
+; ── Guard: if step = 0, force max zoom count ──
+        CMP  R2, R15          ; re_step == 0?
+        JE   zi_halt
+        CMP  R3, R15          ; im_step == 0?
+        JE   zi_halt
+
+        POP  R3
+        POP  R2
+        RET
+
+zi_halt:
+        DATA R0, 20
+        STORE R0, 0x7F08
+        POP  R3
+        POP  R2
+        RET
+
+; ══════════════════════════════
+; fpmul: Signed 8.8 fixed-point multiply
+; Input: R0, R1 (signed 8.8)
+; Output: R0 = R0 * R1 in 8.8
+fpmul:
+        PUSH R2
+        PUSH R3
+        DATA R2, 0
+        MOV  R3, R0
+        DATA R11, 0x8000
+        AND  R3, R11
+        CMP  R3, R15
+        JE   fp_r0pos
+        NOT  R0
+        ADD  R0, R14
+        DATA R2, 1
+fp_r0pos:
+        MOV  R3, R1
+        DATA R11, 0x8000
+        AND  R3, R11
+        CMP  R3, R15
+        JE   fp_r1pos
+        NOT  R1
+        ADD  R1, R14
+        XOR  R2, R14
+fp_r1pos:
+        MOV  R3, R0
+        MULH R3, R1
+        MUL  R0, R1
+        SHR8 R0
+        SHL8 R3
+        OR   R0, R3
+        CMP  R2, R15
+        JE   fp_done
+        NOT  R0
+        ADD  R0, R14
+fp_done:
+        POP  R3
+        POP  R2
+        RET`;
+}
+
 // ── Mandelbrot assembly is inlined in SAMPLE_PROGRAMS below ──────────────
 // Uses signed 8.8 fixed-point: 1.0 = 256, -2.0 = 65024 (0xFE00 unsigned)
 // MULH instruction gives high 16 bits of 32-bit unsigned multiply
@@ -363,6 +805,115 @@ sp_wr:  STRI R11, R1
 //   IM_STEP = round(2.7/256 × 256)   = 3
 //   ESCAPE  = 4.0 × 256              = 1024
 //   MAX_ITER                          = 16
+
+// ── JS Fractal Zoom Renderer ────────────────────────────────────────────
+// Renders Mandelbrot directly to VRAM with float64 precision.
+// Returns a cleanup function to stop the animation.
+function startFractalZoom(
+  pokeRaw: (addr: number, val: number) => void,
+  refresh: () => void,
+): () => void {
+  let running = true;
+  const GRID = 256;
+  const VIDEO_BASE = 0x8000;
+  const MAX_ITER = 64;
+
+  // 16-color palette indices (same as VideoView)
+  // Color 0 = inside set (black), 1-15 = escape colors
+  
+  // Target: Seahorse Valley
+  const TARGET_RE = -0.7453;
+  const TARGET_IM = 0.1127;
+
+  // Start with standard view
+  let scale = 3.5;  // width in real coords
+  const ZOOM_FACTOR = 0.965;  // 3.5% zoom per frame
+  const MIN_SCALE = 0.0001;
+  let colorOffset = 0;
+  let frame = 0;
+
+  function renderFrame() {
+    if (!running) return;
+
+    const halfW = scale / 2;
+    const halfH = (scale * 0.8) / 2;  // slightly narrower height
+    const reMin = TARGET_RE - halfW;
+    const imMin = TARGET_IM - halfH;
+    const reStep = scale / GRID;
+    const imStep = (scale * 0.8) / GRID;
+
+    // Render to VRAM
+    for (let py = 0; py < GRID; py++) {
+      const ci = imMin + py * imStep;
+      for (let px = 0; px < GRID; px++) {
+        const cr = reMin + px * reStep;
+
+        // Mandelbrot iteration
+        let zr = 0, zi = 0;
+        let iter = 0;
+        while (iter < MAX_ITER) {
+          const zr2 = zr * zr;
+          const zi2 = zi * zi;
+          if (zr2 + zi2 > 4) break;
+          zi = 2 * zr * zi + ci;
+          zr = zr2 - zi2 + cr;
+          iter++;
+        }
+
+        // Color: 0 for inside, 1-15 for escaped with cycling
+        let color = 0;
+        if (iter < MAX_ITER) {
+          color = ((iter + colorOffset) % 15) + 1;
+        }
+
+        // Write 4bpp pixel to VRAM
+        const byteAddr = VIDEO_BASE + py * 128 + Math.floor(px / 2);
+        const existing = 0; // We'll write full bytes for even pixels
+        if ((px & 1) === 0) {
+          // Even pixel: high nibble — store and wait for odd
+          // Read-modify-write by processing pairs
+          const cr2 = reMin + (px + 1) * reStep;
+          let zr2 = 0, zi2 = 0, iter2 = 0;
+          while (iter2 < MAX_ITER) {
+            const a = zr2 * zr2;
+            const b = zi2 * zi2;
+            if (a + b > 4) break;
+            zi2 = 2 * zr2 * zi2 + ci;
+            zr2 = a - b + cr2;
+            iter2++;
+          }
+          let color2 = 0;
+          if (iter2 < MAX_ITER) {
+            color2 = ((iter2 + colorOffset) % 15) + 1;
+          }
+          // Write both pixels as one byte: high nibble = even, low nibble = odd
+          pokeRaw(byteAddr, ((color & 0x0F) << 4) | (color2 & 0x0F));
+          px++; // skip odd pixel (already processed)
+        }
+      }
+    }
+
+    refresh();
+
+    // Advance animation
+    if (scale > MIN_SCALE) {
+      scale *= ZOOM_FACTOR;
+    }
+    colorOffset++;
+    frame++;
+
+    // Schedule next frame
+    if (running) {
+      requestAnimationFrame(renderFrame);
+    }
+  }
+
+  // Start
+  requestAnimationFrame(renderFrame);
+
+  // Return cleanup
+  return () => { running = false; };
+}
 
 const SAMPLE_PROGRAMS: Record<string, { name: string; desc: string; code: string; bytes: number[]; expect: string }> = {
   add: {
@@ -1171,6 +1722,23 @@ fp_done:
         RET`,
     bytes: [], expect: 'Mandelbrot set in video RAM',
   },
+  mandelbrot_anim: {
+    name: 'Fractal Anim', desc: 'ASM zoom + color cycle',
+    code: generateMandelbrotAnim(),
+    bytes: [], expect: 'Animated Mandelbrot with zoom and color cycling',
+  },
+  fractal_zoom: {
+    name: '🎬 Fractal Zoom', desc: 'JS-rendered smooth zoom (Seahorse Valley)',
+    code: `; Fractal Zoom — JS-rendered Mandelbrot animation
+; This demo uses native JavaScript to render directly to VRAM
+; with float64 precision, enabling smooth continuous zoom.
+; The CPU is idle — all rendering is done by the host.
+;
+; Target: Seahorse Valley (-0.745, 0.186)
+; 200+ frames of smooth zoom with color cycling
+HALT`,
+    bytes: [], expect: 'JS-rendered fractal zoom animation',
+  },
   power: {
     name: 'Power', desc: '2^15 = 32768',
     code: `; Compute 2^15 = 32768 using MUL
@@ -1628,6 +2196,7 @@ export default function App() {
   const [activeProgram, setActiveProgram] = useState('add');
   const [editorCode, setEditorCode] = useState(SAMPLE_PROGRAMS.add.code);
   const [showHelp, setShowHelp] = useState(false);
+  const fractalCleanupRef = React.useRef<(() => void) | null>(null);
 
   // Auto-assemble the initial program once computer is ready
   useEffect(() => {
@@ -1671,6 +2240,13 @@ export default function App() {
   }, [computer]);
 
   const handleLoadProgram = (key: string) => {
+    // Stop any running fractal zoom animation
+    if (fractalCleanupRef.current) {
+      fractalCleanupRef.current();
+      fractalCleanupRef.current = null;
+    }
+    computer.pause();
+
     const prog = SAMPLE_PROGRAMS[key];
     if (!prog) return;
     setActiveProgram(key);
@@ -1680,6 +2256,11 @@ export default function App() {
     } else {
       const result = assemble(prog.code);
       if (result.success) computer.loadProgram(result.bytes);
+    }
+
+    // Special: start JS fractal zoom animation
+    if (key === 'fractal_zoom') {
+      fractalCleanupRef.current = startFractalZoom(computer.pokeRaw, computer.refresh);
     }
   };
 
@@ -1726,7 +2307,7 @@ export default function App() {
           <span style={{
             fontSize: '0.6rem', color: 'var(--text-muted)',
             fontFamily: 'var(--font-mono)', marginLeft: 2,
-          }}>v0.2 · 16-bit CPU</span>
+          }}>v1.0 · 16-bit CPU</span>
         </div>
 
         {/* Program tabs */}

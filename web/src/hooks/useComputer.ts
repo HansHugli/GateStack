@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { createComputer, IComputer, CpuState, CycleTrace } from '../wasm-bridge';
+import { createComputer, IComputer, CpuState, CycleTrace, EngineType } from '../wasm-bridge';
 
 interface Snapshot {
   state: CpuState;
@@ -24,6 +24,9 @@ export interface ComputerHook {
   consoleOutput: number[];
   canStepBack: boolean;
   waitingForInput: { register: number } | null;
+  engineType: EngineType;
+  wasmAvailable: boolean;
+  cyclesPerSec: number;
 
   // Actions
   loadProgram: (bytes: number[]) => void;
@@ -41,6 +44,7 @@ export interface ComputerHook {
   clearBreakpoints: () => void;
   clearConsole: () => void;
   submitInput: (value: number, displayText?: string) => void;
+  switchEngine: (engine: EngineType) => void;
 }
 
 const HISTORY_SIZE = 64;
@@ -66,14 +70,22 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const [consoleOutput, setConsoleOutput] = useState<number[]>([]);
   const [canStepBack, setCanStepBack] = useState(false);
   const [waitingForInput, setWaitingForInput] = useState<{ register: number } | null>(null);
+  const [engineType, setEngineType] = useState<EngineType>('js');
+  const [wasmAvailable, setWasmAvailable] = useState(false);
+  const [cyclesPerSec, setCyclesPerSec] = useState(0);
+
+  // Performance tracking
+  const perfRef = useRef({ lastTime: 0, lastCycles: 0, cps: 0 });
 
   useEffect(() => {
     let cancelled = false;
-    createComputer().then(computer => {
+    createComputer().then(result => {
       if (cancelled) return;
-      computerRef.current = computer;
+      computerRef.current = result.computer;
+      setEngineType(result.engine);
+      setWasmAvailable(result.wasmAvailable);
       if (initialProgram) {
-        computer.loadProgram(new Uint8Array(initialProgram));
+        result.computer.loadProgram(new Uint8Array(initialProgram));
       }
       setIsReady(true);
       refreshState();
@@ -155,6 +167,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
 
     runningRef.current = true;
     setIsRunning(true);
+    setCyclesPerSec(0);
+    perfRef.current = { lastTime: performance.now(), lastCycles: c.getCycleCount(), cps: 0 };
 
     // If sitting on a breakpoint, step past it first
     const currentPc = c.getPc();
@@ -175,6 +189,9 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
         let halted = false;
         let hitBreakpoint = false;
 
+        // Always respect vsync breaks for proper video rendering
+        computerRef.current.setSkipVsync(false);
+
         // Save one snapshot per frame for undo during run
         saveSnapshot();
 
@@ -186,6 +203,15 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
             executed++;
           }
           halted = halted || computerRef.current.isHalted();
+        } else if (speed >= 10000000) {
+          // Time-budgeted execution: run until ~14ms elapsed or vsync
+          // Use large batch to maximize throughput between vsync events
+          const BATCH = 50000000; // 50M per batch — will break early on vsync
+          const deadline = performance.now() + 14; // 14ms budget (~60fps)
+          const n = computerRef.current.run(BATCH);
+          executed += n;
+          halted = computerRef.current.isHalted();
+          hitBreakpoint = n < BATCH && !halted && breakpoints.has(computerRef.current.getPc());
         } else {
           executed = computerRef.current.run(speed);
           halted = computerRef.current.isHalted();
@@ -194,6 +220,21 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
 
         const s = refreshState();
         if (s) recordCpuHistory(s);
+
+        // Track cycles/sec (update every ~500ms)
+        const now = performance.now();
+        const currentCycles = computerRef.current.getCycleCount();
+        const perf = perfRef.current;
+        if (now - perf.lastTime >= 500) {
+          const dt = (now - perf.lastTime) / 1000;
+          const dc = currentCycles - perf.lastCycles;
+          if (dt > 0 && dc >= 0) {
+            perf.cps = dc / dt;
+            setCyclesPerSec(perf.cps);
+          }
+          perf.lastTime = now;
+          perf.lastCycles = currentCycles;
+        }
 
         // Check stop conditions in priority order
         if (computerRef.current.isWaitingForInput()) {
@@ -299,14 +340,52 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     }
   }, [refreshState, run]);
 
+  const switchEngine = useCallback((engine: EngineType) => {
+    if (engine === engineType) return;
+
+    // Pause if running
+    runningRef.current = false;
+    setIsRunning(false);
+
+    // Save current state from old engine
+    const oldComputer = computerRef.current;
+    const snapshot = oldComputer?.getSnapshot();
+    const oldBreakpoints = oldComputer?.getBreakpoints();
+
+    // Create new engine
+    createComputer(engine).then(result => {
+      computerRef.current = result.computer;
+      setEngineType(result.engine);
+      console.log(`🔄 Switched to ${result.engine.toUpperCase()} engine`);
+
+      // Restore full state into new engine (restoreSnapshot handles memory + CPU state)
+      if (snapshot) {
+        result.computer.restoreSnapshot(snapshot);
+      }
+
+      // Restore breakpoints
+      if (oldBreakpoints) {
+        oldBreakpoints.forEach(addr => result.computer.addBreakpoint(addr));
+      }
+
+      // Clear undo history (snapshots from old engine are incompatible)
+      snapshotHistory.current = [];
+      cpuHistory.current = [];
+      setCanStepBack(false);
+
+      refreshState();
+    });
+  }, [engineType, refreshState]);
+
   // Expose memory ref (no copy) + version for re-render triggers
   const memory = memoryRef.current;
 
   return {
     state, memory, memoryVersion, trace, traceHistory, isRunning, isReady,
     breakpoints, consoleOutput, canStepBack, waitingForInput,
+    engineType, wasmAvailable, cyclesPerSec,
     loadProgram, step, stepBack, run, pause, reset, hardReset,
     setSpeed, poke, pokeRaw, refresh, toggleBreakpoint, clearBreakpoints, clearConsole,
-    submitInput,
+    submitInput, switchEngine,
   };
 }
