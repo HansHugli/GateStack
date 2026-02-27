@@ -23,6 +23,8 @@ Thumbs.db
 *.snap
 web/main.mjs
 web/preload.cjs
-nul
 
+# App specific
+content/
+nul
 handle64.exe
