@@ -1,7 +1,7 @@
 {
   "name": "gatestack",
-  "version": "3.0.0",
-  "description": "GateStack — Visual 16-bit Computer Simulator",
+  "version": "4.0.0",
+  "description": "GateStack — Visual 32-bit Computer Simulator",
   "author": "Hans",
   "license": "MIT",
   "private": true,

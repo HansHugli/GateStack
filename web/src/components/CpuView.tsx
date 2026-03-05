@@ -1,7 +1,8 @@
 import React from 'react';
 import { CpuState, CycleTrace, MicroStep } from '../wasm-bridge';
 
-const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0').toUpperCase();
+const hex32 = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0').toUpperCase();
+const hex8 = (n: number) => '0x' + (n & 0xFF).toString(16).padStart(2, '0').toUpperCase();
 
 interface Props {
   state: CpuState | null;
@@ -12,8 +13,9 @@ export default function CpuView({ state, trace }: Props) {
   if (!state) return null;
 
   const activeReg = [...(trace?.steps ?? [])].reverse().find(
-    (s: MicroStep) => s.BusTransfer?.dest?.startsWith('R')
-  )?.BusTransfer?.dest;
+    (s: MicroStep) => 'BusTransfer' in s && (s as any).BusTransfer?.dest?.startsWith('R')
+  );
+  const activeRegDest = activeReg && 'BusTransfer' in activeReg ? (activeReg as any).BusTransfer?.dest : undefined;
 
   // Split into two columns: R0-R7 and R8-R15
   const leftRegs = state.r.slice(0, 8);
@@ -30,38 +32,44 @@ export default function CpuView({ state, trace }: Props) {
         Registers
       </div>
 
-      {/* 2-column register grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 6px' }}>
+      {/* Single-column register list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         {state.r.map((val, i) => {
           const name = `R${i}`;
-          const isActive = activeReg === name;
+          const isActive = activeRegDest === name;
           const hasValue = val !== 0;
+          const ascii = (val & 0xFF) >= 32 && (val & 0xFF) < 127 ? String.fromCharCode(val & 0xFF) : '·';
           return (
             <div key={i} style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '2px 6px',
+              display: 'flex', alignItems: 'center',
+              padding: '1px 6px',
               background: isActive ? 'var(--accent-blue-dim)' : 'transparent',
               borderRadius: 'var(--radius-sm)',
               border: `1px solid ${isActive ? '#2563eb40' : 'transparent'}`,
               transition: 'all 0.15s',
+              gap: 6,
             }}>
               <span style={{
                 fontSize: '0.62rem',
                 color: isActive ? 'var(--accent-blue)' : hasValue ? 'var(--text-secondary)' : 'var(--text-dim)',
                 fontWeight: 700, fontFamily: 'var(--font-mono)',
-                minWidth: i >= 10 ? 26 : 20,
+                width: 24,
+                flexShrink: 0,
               }}>{name}</span>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: '0.68rem',
-                  color: isActive ? '#93c5fd' : hasValue ? 'var(--text-primary)' : 'var(--text-dim)',
-                  fontWeight: 700,
-                }}>{hex(val)}</span>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: '0.52rem',
-                  color: 'var(--text-muted)', minWidth: 28, textAlign: 'right' as const,
-                }}>{val}</span>
-              </div>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.62rem',
+                color: isActive ? '#93c5fd' : hasValue ? 'var(--text-primary)' : 'var(--text-dim)',
+                fontWeight: 700, flexShrink: 0,
+              }}>{hex32(val)}</span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.62rem',
+                color: 'var(--text-muted)', flex: 1, textAlign: 'right' as const,
+              }}>{val}</span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '0.62rem',
+                color: isActive ? '#93c5fd' : hasValue ? 'var(--accent-amber)' : 'var(--text-dim)',
+                width: 10, textAlign: 'center' as const, flexShrink: 0,
+              }}>{ascii}</span>
             </div>
           );
         })}
@@ -96,7 +104,7 @@ export default function CpuView({ state, trace }: Props) {
             <span style={{
               fontFamily: 'var(--font-mono)', fontSize: '0.62rem',
               color: 'var(--text-secondary)',
-            }}>{hex(value)}</span>
+            }}>{label === 'IR' ? hex8(value) : hex32(value)}</span>
           </div>
         ))}
       </div>
@@ -143,7 +151,7 @@ export default function CpuView({ state, trace }: Props) {
             {' '}{trace.reg_a}, {trace.reg_b}
           </span>
           <span style={{ color: 'var(--text-dim)', fontSize: '0.55rem', display: 'block', marginTop: 1, fontFamily: 'var(--font-mono)' }}>
-            @{hex(trace.address)} · cycle {trace.cycle}
+            @{hex32(trace.address)} · cycle {trace.cycle}
           </span>
         </div>
       )}

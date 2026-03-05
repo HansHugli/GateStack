@@ -35,13 +35,17 @@ const EDITOR_STYLES = `
 `;
 
 // Instruction sizes for address mapping
-const MNEMONICS_16: Record<string, number> = {
-  HALT: 2, ADD: 2, SUB: 2, MUL: 2, DIV: 2, MOD: 2,
-  SHR: 2, SHL: 2, NOT: 2, AND: 2, OR: 2, XOR: 2, CMP: 2,
-  PUSH: 2, POP: 2, LDRI: 2, STRI: 2, OUT: 2, IN: 2, JMPR: 2, RET: 2,
-  LOAD: 4, STORE: 4, DATA: 4,
-  JMP: 3, JC: 3, JA: 3, JE: 3, CALL: 3,
-  DB: 1, DW: 2,
+const MNEMONICS_SIZE: Record<string, number> = {
+  HALT: 2, ADD: 2, SUB: 2, MUL: 2, MULH: 2, DIV: 2, MOD: 2,
+  IDIV: 2, IMOD: 2, FPMUL: 2,
+  SHR: 2, SHL: 2, SHR8: 2, SHL8: 2, SHRN: 2, SHLN: 2,
+  NOT: 2, AND: 2, OR: 2, XOR: 2, CMP: 2, MOV: 2,
+  PUSH: 2, POP: 2, LDRI: 2, STRI: 2, LDRI32: 2, STRI32: 2,
+  OUT: 2, IN: 2, JMPR: 2, RET: 2,
+  LOAD: 5, STORE: 5, LOAD32: 5, STORE32: 5,
+  DATA: 6,
+  JMP: 4, JC: 4, JA: 4, JE: 4, JZ: 4, JNZ: 4, CALL: 4,
+  DB: 1, DW: 2, DD: 4,
 };
 
 function buildAddressToLineMap(code: string): Map<number, number> {
@@ -59,7 +63,7 @@ function buildAddressToLineMap(code: string): Map<number, number> {
     if (!rest) continue;
     const mnemonic = rest.split(/[\s,]+/)[0].toUpperCase();
     map.set(addr, i);
-    const size = MNEMONICS_16[mnemonic] ?? 2;
+    const size = MNEMONICS_SIZE[mnemonic] ?? 2;
     addr += size;
   }
   return map;
@@ -94,28 +98,38 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
 
     if (opcode === OP.HALT) {
       decoded = 'HALT';
-    } else if (opcode >= OP.ADD && opcode <= OP.CMP) {
-      // ALU: 2 bytes
-      if (opcode === OP.NOT || opcode === OP.SHR || opcode === OP.SHL) {
+    } else if (opcode === OP.RET) {
+      decoded = 'RET';
+    } else if (opcode === OP.DATA) {
+      // 6 bytes: opcode + reg + imm32 LE
+      const val = (bytes[i + 2] | (bytes[i + 3] << 8) | (bytes[i + 4] << 16) | (bytes[i + 5] << 24)) >>> 0;
+      decoded = `DATA R${rA}, ${val}`;
+    } else if (opcode === OP.LOAD || opcode === OP.STORE || opcode === OP.LOAD32 || opcode === OP.STORE32) {
+      // 5 bytes: opcode + reg + addr24 LE
+      const memAddr = bytes[i + 2] | (bytes[i + 3] << 8) | (bytes[i + 4] << 16);
+      const targetLabel = addrToLabel.get(memAddr);
+      decoded = `${opName} R${rA}, [${targetLabel ?? ('0x' + h6(memAddr))}]`;
+    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE
+            || opcode === OP.JZ || opcode === OP.JNZ || opcode === OP.CALL) {
+      // 4 bytes: opcode + addr24 LE
+      const target = bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16);
+      const targetLabel = addrToLabel.get(target);
+      decoded = `${opName} ${targetLabel ?? ('0x' + h6(target))}`;
+    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
+      decoded = `${opName} R${rA}`;
+    } else if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
+            || opcode === OP.SHRN || opcode === OP.SHLN
+            || opcode === OP.IDIV || opcode === OP.IMOD
+            || opcode === OP.FPMUL
+            || opcode === OP.LDRI || opcode === OP.STRI
+            || opcode === OP.LDRI32 || opcode === OP.STRI32) {
+      // ALU: 2 bytes — some are single-operand
+      if (opcode === OP.NOT || opcode === OP.SHR || opcode === OP.SHL
+          || opcode === OP.SHR8 || opcode === OP.SHL8) {
         decoded = `${opName} R${rA}`;
       } else {
         decoded = `${opName} R${rA}, R${rB}`;
       }
-    } else if (opcode === OP.LOAD || opcode === OP.STORE) {
-      const memAddr = (bytes[i + 3] << 8) | bytes[i + 2];
-      decoded = `${opName} R${rA}, [${memAddr}]`;
-    } else if (opcode === OP.DATA) {
-      const val = (bytes[i + 3] << 8) | bytes[i + 2];
-      const ascii = (val >= 32 && val < 127) ? ` '${String.fromCharCode(val)}'` : '';
-      decoded = `DATA R${rA}, ${val}${ascii}`;
-    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE || opcode === OP.CALL) {
-      const target = (bytes[i + 2] << 8) | bytes[i + 1];
-      const targetLabel = addrToLabel.get(target);
-      decoded = `${opName} ${targetLabel ?? target}`;
-    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
-      decoded = `${opName} R${rA}`;
-    } else if (opcode === OP.RET) {
-      decoded = 'RET';
     } else {
       decoded = `??? (0x${h2(opcode)})`;
     }
@@ -126,8 +140,9 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
   return result;
 }
 
-function h2(n: number) { return n.toString(16).padStart(2, '0').toUpperCase(); }
-function h4(n: number) { return n.toString(16).padStart(4, '0').toUpperCase(); }
+function h2(n: number) { return (n & 0xFF).toString(16).padStart(2, '0').toUpperCase(); }
+function h4(n: number) { return n.toString(16).padStart(6, '0').toUpperCase(); }
+function h6(n: number) { return n.toString(16).padStart(6, '0').toUpperCase(); }
 
 function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
   bytes: number[];
@@ -366,7 +381,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
           )}
         </div>
         <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary, #94a3b8)', fontWeight: 400, fontFamily: FONT_FAMILY }}>
-          PC:{currentAddress.toString(16).padStart(4, '0').toUpperCase()}
+          PC:{currentAddress.toString(16).padStart(6, '0').toUpperCase()}
           {activeLine >= 0 && <span style={{ color: 'var(--accent-amber, #fcd34d)' }}> L{activeLine + 1}</span>}
         </span>
       </div>
@@ -412,7 +427,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                   onToggleBreakpoint(lineToAddr.get(i)!);
                 }
               }}
-              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(4, '0')}` : undefined}
+              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(6, '0')}` : undefined}
               >
                 {/* Breakpoint dot area */}
                 <span style={{
@@ -622,7 +637,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
                     }}>
                       <span style={{ color: '#c084fc' }}>{name}</span>
                       <span style={{ color: '#475569' }}> = </span>
-                      <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(4, '0').toUpperCase()} ({addr})</span>
+                      <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(6, '0').toUpperCase()} ({addr})</span>
                     </span>
                   ); })}
                 </div>

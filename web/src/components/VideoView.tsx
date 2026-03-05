@@ -6,36 +6,26 @@ interface Props {
   isRunning: boolean;
 }
 
+// ── v2.0 memory map ──
 const GRID = 256;
-const PIXELS = GRID * GRID;                 // 65536
-const BYTES_PER_FRAME = PIXELS / 2;         // 32768 bytes, 4bpp (2 pixels per byte)
-const VIDEO_BASE = 0x8000;                   // video RAM at upper 32KB
-
-// 16-color palette — rich gradient for fractals
-const PALETTE: [number, number, number][] = [
-  [10,  12,  20],   //  0: black (Mandelbrot interior / background)
-  [25,  7,   80],   //  1: deep indigo
-  [9,   1,  142],   //  2: indigo
-  [4,   4,  200],   //  3: blue
-  [0,   75, 220],   //  4: bright blue
-  [5,  140, 190],   //  5: teal
-  [10, 190, 120],   //  6: cyan-green
-  [40, 220,  60],   //  7: green
-  [120,230,  25],   //  8: yellow-green
-  [220,220,  15],   //  9: yellow
-  [255,180,   0],   // 10: orange
-  [255,100,   0],   // 11: dark orange
-  [220, 40,   5],   // 12: red
-  [170, 15,  60],   // 13: crimson
-  [100,  5,  80],   // 14: purple
-  [50,   5,  50],   // 15: dark purple
-];
+const PIXELS = GRID * GRID;              // 65536 pixels
+const VIDEO_BASE = 0x3D0000;             // Front buffer, 64KB, 8bpp
+const PALETTE_BASE = 0x3E0000;           // 256 × 4 bytes (R, G, B, _)
+const VIDEO_END = 0x3DFFFF;
 
 export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgDataRef = useRef<ImageData | null>(null);
+  // Cache the palette so we don't re-read 1024 bytes every pixel
+  const paletteRef = useRef<Uint8Array>(new Uint8Array(1024));
 
-  const hasContent = memory.slice(VIDEO_BASE, VIDEO_BASE + 256).some(v => v !== 0);
+  const hasContent = memory.slice != null && (() => {
+    // Quick check: scan first 256 bytes of VRAM for any non-zero
+    for (let i = 0; i < 256; i++) {
+      if ((memory[VIDEO_BASE + i] ?? 0) !== 0) return true;
+    }
+    return false;
+  })();
 
   const render = () => {
     const canvas = canvasRef.current;
@@ -43,25 +33,33 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = GRID;
-    canvas.height = GRID;
+    // Only set canvas size once (avoids clearing on every frame = tearing)
+    if (canvas.width !== GRID || canvas.height !== GRID) {
+      canvas.width = GRID;
+      canvas.height = GRID;
+    }
 
     if (!imgDataRef.current || imgDataRef.current.width !== GRID) {
       imgDataRef.current = ctx.createImageData(GRID, GRID);
     }
+
+    // Read palette from memory (256 entries × 4 bytes = 1024 bytes)
+    const pal = paletteRef.current;
+    for (let i = 0; i < 1024; i++) {
+      pal[i] = memory[PALETTE_BASE + i] ?? 0;
+    }
+
     const data = imgDataRef.current.data;
 
+    // 8bpp: each pixel is 1 byte index into the 256-color palette
     for (let i = 0; i < PIXELS; i++) {
-      const byteIdx = Math.floor(i / 2);
-      const byteVal = memory[VIDEO_BASE + byteIdx] ?? 0;
-      // High nibble = left pixel (even i), low nibble = right pixel (odd i)
-      const color = (i & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
-      const [r, g, b] = PALETTE[color];
+      const colorIdx = memory[VIDEO_BASE + i] ?? 0;
+      const palOff = colorIdx * 4;
       const off = i * 4;
-      data[off]     = r;
-      data[off + 1] = g;
-      data[off + 2] = b;
-      data[off + 3] = 255;
+      data[off]     = pal[palOff];      // R
+      data[off + 1] = pal[palOff + 1];  // G
+      data[off + 2] = pal[palOff + 2];  // B
+      data[off + 3] = 255;              // A
     }
 
     ctx.putImageData(imgDataRef.current, 0, 0);
@@ -91,7 +89,7 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
             fontSize: '0.58rem', color: 'var(--text-dim)', fontWeight: 400,
             fontFamily: 'var(--font-mono)',
           }}>
-            256×256 · 4bpp · 16 colors{isRunning ? ' · live' : ''}
+            256×256 · 8bpp · 256 colors{isRunning ? ' · live' : ''}
           </span>
         </div>
 
@@ -111,7 +109,7 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
         <canvas
           ref={canvasRef}
           style={{
-            width: 320, height: 320,
+            width: '100%', maxWidth: 460, aspectRatio: '1 / 1',
             border: `1px solid ${isRunning && hasContent ? 'rgba(168,85,247,0.4)' : 'var(--border-subtle)'}`,
             borderRadius: 'var(--radius-sm)',
             imageRendering: 'pixelated',
@@ -126,7 +124,8 @@ export default function VideoView({ memory, memoryVersion, isRunning }: Props) {
           textAlign: 'center', marginTop: 4,
           fontFamily: 'var(--font-mono)',
         }}>
-          Video RAM @ 0x{VIDEO_BASE.toString(16).toUpperCase()}–0x{(VIDEO_BASE + BYTES_PER_FRAME - 1).toString(16).toUpperCase()} · 32KB
+          VRAM 0x{VIDEO_BASE.toString(16).toUpperCase()}–0x{VIDEO_END.toString(16).toUpperCase()} · 64KB
+          {' · '}Palette 0x{PALETTE_BASE.toString(16).toUpperCase()}
         </div>
       )}
     </div>

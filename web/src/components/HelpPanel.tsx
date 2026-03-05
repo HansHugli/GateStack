@@ -38,41 +38,74 @@ const S: Record<string, React.CSSProperties> = {
   },
 };
 
-const ISA = [
-  ['ADD rA, rB', '0x01', 'rA = rA + rB'],
-  ['SUB rA, rB', '0x02', 'rA = rA - rB'],
-  ['MUL rA, rB', '0x03', 'rA = rA × rB (low 16 bits)'],
-  ['MULH rA, rB', '0x0D', 'rA = (rA × rB) >> 16 (high 16 bits)'],
-  ['DIV rA, rB', '0x04', 'rA = rA ÷ rB (integer)'],
-  ['MOD rA, rB', '0x05', 'rA = rA % rB (remainder)'],
-  ['SHR rA', '0x06', 'rA = rA >> 1'],
-  ['SHL rA', '0x07', 'rA = rA << 1'],
-  ['NOT rA', '0x08', 'rA = ~rA (bitwise NOT)'],
-  ['AND rA, rB', '0x09', 'rA = rA & rB'],
-  ['OR rA, rB', '0x0A', 'rA = rA | rB'],
-  ['XOR rA, rB', '0x0B', 'rA = rA ^ rB'],
-  ['CMP rA, rB', '0x0C', 'Compare — sets flags only'],
-  ['MOV rA, rB', '0x0E', 'rA = rB (copy register)'],
-  ['SHR8 rA', '0x0F', 'rA = rA >> 8 (shift right 8)'],
-  ['SHL8 rA', '0x17', 'rA = rA << 8 (shift left 8)'],
-  ['LOAD rA, [addr]', '0x10', 'rA = RAM[addr16]'],
-  ['STORE rA, [addr]', '0x11', 'RAM[addr16] = rA (low byte)'],
-  ['DATA rA, imm16', '0x12', 'rA = immediate (0-65535)'],
-  ['PUSH rA', '0x13', 'Push rA onto stack'],
-  ['POP rA', '0x14', 'Pop top of stack into rA'],
-  ['LDRI rA, rB', '0x15', 'rA = RAM[rB] (indirect load)'],
-  ['STRI rA, rB', '0x16', 'RAM[rB] = rA (indirect store)'],
-  ['JMP label', '0x18', 'Unconditional jump'],
-  ['JC label', '0x19', 'Jump if carry'],
-  ['JA label', '0x1A', 'Jump if A > B'],
-  ['JE label', '0x1B', 'Jump if A == B'],
-  ['JMPR rA', '0x1C', 'Jump to address in rA'],
-  ['CALL label', '0x1D', 'Push return addr, jump'],
-  ['RET', '0x1E', 'Pop return addr, jump back'],
-  ['OUT rA', '0x1F', 'Print rA (low byte) to console'],
-  ['IN rA', '0x20', 'Read user input into rA'],
-  ['HALT', '0x00', 'Stop execution'],
+const ISA_CATEGORIES: Array<{ label: string; rows: string[][] }> = [
+  { label: 'Core', rows: [
+    ['DATA rA, imm32', '0x12', 'rA = 32-bit immediate value'],
+    ['MOV rA, rB', '0x0E', 'rA = rB (copy register)'],
+    ['HALT', '0x00', 'Stop execution'],
+  ]},
+  { label: 'Arithmetic', rows: [
+    ['ADD rA, rB', '0x01', 'rA = rA + rB'],
+    ['SUB rA, rB', '0x02', 'rA = rA - rB'],
+    ['MUL rA, rB', '0x03', 'rA = rA × rB (low 32 bits)'],
+    ['DIV rA, rB', '0x04', 'rA = rA ÷ rB (unsigned)'],
+    ['MOD rA, rB', '0x05', 'rA = rA % rB (unsigned)'],
+    ['CMP rA, rB', '0x0C', 'Compare — sets flags only'],
+  ]},
+  { label: 'Bitwise & Shifts', rows: [
+    ['NOT rA', '0x08', 'rA = ~rA'],
+    ['AND rA, rB', '0x09', 'rA = rA & rB'],
+    ['OR rA, rB', '0x0A', 'rA = rA | rB'],
+    ['XOR rA, rB', '0x0B', 'rA = rA ^ rB'],
+    ['SHR rA', '0x06', 'rA = rA >> 1'],
+    ['SHL rA', '0x07', 'rA = rA << 1'],
+  ]},
+  { label: 'Jumps & Flow', rows: [
+    ['JMP label', '0x18', 'Unconditional jump'],
+    ['JE label', '0x1B', 'Jump if equal'],
+    ['JA label', '0x1A', 'Jump if A > B'],
+    ['JC label', '0x19', 'Jump if carry'],
+    ['CALL label', '0x1D', 'Push return addr, jump'],
+    ['RET', '0x1E', 'Pop return addr, jump back'],
+  ]},
+  { label: 'Memory & Stack', rows: [
+    ['LOAD rA, [addr]', '0x10', 'rA = RAM[addr] (1 byte)'],
+    ['STORE rA, [addr]', '0x11', 'RAM[addr] = rA (low byte)'],
+    ['LDRI rA, rB', '0x15', 'rA = RAM[rB] (indirect byte)'],
+    ['STRI rA, rB', '0x16', 'RAM[rB] = rA (indirect byte)'],
+    ['PUSH rA', '0x13', 'SP -= 4, RAM[SP] = rA'],
+    ['POP rA', '0x14', 'rA = RAM[SP], SP += 4'],
+  ]},
+  { label: 'I/O', rows: [
+    ['OUT rA', '0x1F', 'Print rA (low byte) to console'],
+    ['IN rA', '0x20', 'Read user input into rA'],
+  ]},
+  { label: 'Advanced Arithmetic', rows: [
+    ['MULH rA, rB', '0x0D', 'rA = (rA × rB) >> 32 (high 32)'],
+    ['IDIV rA, rB', '0x29', 'rA = rA ÷ rB (signed)'],
+    ['IMOD rA, rB', '0x2A', 'rA = rA % rB (signed)'],
+    ['FPMUL rA, rB', '0x2B', 'rA = (rA × rB) >> 8 (fixed-point 8.8)'],
+  ]},
+  { label: 'Advanced Shifts', rows: [
+    ['SHR8 rA', '0x0F', 'rA = rA >> 8'],
+    ['SHL8 rA', '0x17', 'rA = rA << 8'],
+    ['SHRN rA, rB', '0x21', 'rA = rA >> rB (variable shift right)'],
+    ['SHLN rA, rB', '0x22', 'rA = rA << rB (variable shift left)'],
+  ]},
+  { label: 'Advanced Jumps', rows: [
+    ['JZ label', '0x23', 'Jump if zero flag set'],
+    ['JNZ label', '0x24', 'Jump if zero flag not set'],
+    ['JMPR rA', '0x1C', 'Jump to address in rA'],
+  ]},
+  { label: '32-bit Memory', rows: [
+    ['LOAD32 rA, [addr]', '0x25', 'rA = RAM[addr] (4 bytes LE)'],
+    ['STORE32 rA, [addr]', '0x26', 'RAM[addr] = rA (4 bytes LE)'],
+    ['LDRI32 rA, rB', '0x27', 'rA = RAM[rB] (indirect 32-bit)'],
+    ['STRI32 rA, rB', '0x28', 'RAM[rB] = rA (indirect 32-bit)'],
+  ]},
 ];
+
+const TOTAL_INSTRUCTIONS = ISA_CATEGORIES.reduce((sum, cat) => sum + cat.rows.length, 0);
 
 const KEYS = [
   ['S', 'Step one instruction'],
@@ -98,7 +131,7 @@ export default function HelpPanel({ onClose }: Props) {
         </div>
 
         <p style={{ ...S.dim, marginBottom: 12, lineHeight: 1.5 }}>
-          16-bit CPU with 16 registers (R0–R15), 64KB RAM, stack, and {ISA.length} instructions.
+          32-bit CPU with 16 registers (R0–R15), 4MB RAM, stack, and {TOTAL_INSTRUCTIONS} instructions.
           Write assembly in the editor, press Ctrl+Enter to assemble, then Step or Run.
         </p>
 
@@ -112,12 +145,24 @@ export default function HelpPanel({ onClose }: Props) {
             </tr>
           </thead>
           <tbody>
-            {ISA.map(([instr, op, desc], i) => (
-              <tr key={i}>
-                <td style={{ ...S.td, ...S.mono, whiteSpace: 'nowrap' }}>{instr}</td>
-                <td style={{ ...S.td, color: 'var(--text-dim)', fontSize: '0.62rem' }}>{op}</td>
-                <td style={{ ...S.td, color: 'var(--text-secondary)' }}>{desc}</td>
-              </tr>
+            {ISA_CATEGORIES.map((cat, ci) => (
+              <React.Fragment key={ci}>
+                <tr>
+                  <td colSpan={3} style={{
+                    padding: '6px 8px 2px', fontSize: '0.6rem', fontWeight: 700,
+                    color: 'var(--accent-blue)', textTransform: 'uppercase',
+                    letterSpacing: '0.8px', borderBottom: '1px solid var(--border-subtle)',
+                    background: 'rgba(59,130,246,0.05)',
+                  }}>{cat.label}</td>
+                </tr>
+                {cat.rows.map(([instr, op, desc], i) => (
+                  <tr key={`${ci}-${i}`}>
+                    <td style={{ ...S.td, ...S.mono, whiteSpace: 'nowrap' }}>{instr}</td>
+                    <td style={{ ...S.td, color: 'var(--text-dim)', fontSize: '0.62rem' }}>{op}</td>
+                    <td style={{ ...S.td, color: 'var(--text-secondary)' }}>{desc}</td>
+                  </tr>
+                ))}
+              </React.Fragment>
             ))}
           </tbody>
         </table>

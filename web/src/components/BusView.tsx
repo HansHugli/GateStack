@@ -6,7 +6,7 @@ interface Props {
   trace: CycleTrace | null;
 }
 
-const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0').toUpperCase();
+const hex = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0').toUpperCase();
 
 const ANIM_STYLES = `
   @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
@@ -19,13 +19,13 @@ const ANIM_STYLES = `
 const TOOLTIPS: Record<string, { full: string; desc: string }> = {
   'IAR': { full: 'Instruction Address Register', desc: 'Holds the address of the next instruction (Program Counter)' },
   'IR':  { full: 'Instruction Register', desc: 'Holds the instruction currently being decoded and executed' },
-  'REGS': { full: 'Register File (R0–R15)', desc: '16 general-purpose 16-bit registers' },
-  'MAR': { full: 'Memory Address Register', desc: 'Selects which of the 256 RAM cells to read or write' },
+  'REGS': { full: 'Register File (R0–R15)', desc: '16 general-purpose 32-bit registers' },
+  'MAR': { full: 'Memory Address Register', desc: 'Selects which RAM address to read or write (22-bit)' },
   'ALU': { full: 'Arithmetic Logic Unit', desc: 'Performs ADD, AND, OR, XOR, NOT, SHL, SHR, CMP operations' },
   'ACC': { full: 'Accumulator', desc: 'Stores the result of the last ALU operation' },
   'TMP': { full: 'Temporary Register', desc: 'Internal register holding the second ALU operand' },
-  'RAM': { full: 'Random Access Memory', desc: '64KB of storage for programs and data' },
-  'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x7FFF, grows downward' },
+  'RAM': { full: 'Random Access Memory', desc: '4MB of storage for programs, data, and video' },
+  'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x3BFFFF, grows downward' },
 };
 
 interface TooltipState {
@@ -58,21 +58,38 @@ export default function BusView({ state, trace }: Props) {
 
   if (!state) return null;
 
-  const components = [
-    { id: 'IAR', x: 20, y: 15, color: '#f59e0b', value: state.iar },
-    { id: 'IR',  x: 95, y: 15, color: '#f59e0b', value: state.ir },
-    { id: 'REGS', x: 250, y: 15, color: '#3b82f6', value: 0 },
-    { id: 'MAR', x: 455, y: 15, color: '#ef4444', value: state.iar },
-    { id: 'ALU', x: 60,  y: 175, color: '#a855f7', value: state.acc },
-    { id: 'ACC', x: 175, y: 175, color: '#14b8a6', value: state.acc },
-    { id: 'TMP', x: 290, y: 175, color: '#64748b', value: state.tmp },
-    { id: 'RAM', x: 420, y: 175, color: '#ef4444', value: 0 },
-    { id: 'SP',  x: 340, y: 15, color: '#22c55e', value: state.sp },
-  ];
-
   const activeTransfers = useMemo(() => {
-    return trace?.steps?.filter(s => s.BusTransfer)?.map(s => s.BusTransfer!) ?? [];
+    return trace?.steps?.filter(s => 'BusTransfer' in s)?.map(s => (s as any).BusTransfer!) ?? [];
   }, [trace]);
+
+  // Derive display values from bus activity
+  const regsValue = useMemo(() => {
+    // Show the value from the last transfer involving REGS
+    const t = [...activeTransfers].reverse().find(t => t.dest === 'REGS' || t.source === 'REGS');
+    return t?.value ?? 0;
+  }, [activeTransfers]);
+
+  const marValue = useMemo(() => {
+    const t = [...activeTransfers].reverse().find(t => t.dest === 'MAR');
+    return t?.value ?? state.iar;
+  }, [activeTransfers, state.iar]);
+
+  const ramValue = useMemo(() => {
+    const t = [...activeTransfers].reverse().find(t => t.dest === 'RAM' || t.source === 'RAM');
+    return t?.value ?? 0;
+  }, [activeTransfers]);
+
+  const components = [
+    { id: 'IAR', x: 10, y: 15, color: '#f59e0b', value: state.iar },
+    { id: 'IR',  x: 140, y: 15, color: '#f59e0b', value: state.ir },
+    { id: 'REGS', x: 270, y: 15, color: '#3b82f6', value: regsValue },
+    { id: 'SP',  x: 400, y: 15, color: '#22c55e', value: state.sp },
+    { id: 'MAR', x: 530, y: 15, color: '#ef4444', value: marValue },
+    { id: 'ALU', x: 50,  y: 175, color: '#a855f7', value: state.acc },
+    { id: 'ACC', x: 195, y: 175, color: '#14b8a6', value: state.acc },
+    { id: 'TMP', x: 340, y: 175, color: '#64748b', value: state.tmp },
+    { id: 'RAM', x: 490, y: 175, color: '#ef4444', value: ramValue },
+  ];
 
   const isSource = (id: string) => activeTransfers.some(t => {
     const src = typeof t.source === 'string' ? t.source : ('Reg' in t.source ? t.source.Reg : '');
@@ -101,23 +118,23 @@ export default function BusView({ state, trace }: Props) {
           <span style={{ fontWeight: 400, fontSize: '0.72rem' }}>
             <span style={{ color: '#a78bfa', fontWeight: 600 }}>{trace.opcode}</span>
             <span style={{ color: '#64748b' }}> {trace.reg_a},{trace.reg_b}</span>
-            <span style={{ color: '#475569' }}> @ 0x{trace.address.toString(16).padStart(2, '0').toUpperCase()}</span>
+            <span style={{ color: '#475569' }}> @ 0x{trace.address.toString(16).padStart(6, '0').toUpperCase()}</span>
           </span>
         )}
       </div>
 
       <div style={{ position: 'relative' }}>
-        <svg viewBox="0 0 510 240" style={{ width: '100%', maxHeight: '240px' }}>
+        <svg viewBox="0 0 640 240" style={{ width: '100%', maxHeight: '240px' }}>
           {/* Main bus line */}
-          <rect x="8" y="106" width="494" height="8" rx="4"
+          <rect x="8" y="106" width="624" height="8" rx="4"
             fill="#1e293b" stroke="#334155" strokeWidth="0.5" />
           {activeTransfers.length > 0 && (
-            <rect x="8" y="106" width="494" height="8" rx="4"
+            <rect x="8" y="106" width="624" height="8" rx="4"
               fill="#ef4444" opacity="0.15"
               style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           )}
-          <text x="255" y="103" textAnchor="middle" fill="#8b95a8" fontSize="8">
-            BUS {hex(state.bus)} ({state.bus})
+          <text x="320" y="103" textAnchor="middle" fill="#8b95a8" fontSize="8">
+            BUS
           </text>
 
           {/* Components */}
@@ -126,7 +143,7 @@ export default function BusView({ state, trace }: Props) {
             const dst = isDest(comp.id);
             const active = src || dst;
             const isTop = comp.y < 100;
-            const cx = comp.x + 30;
+            const cx = comp.x + 45;
             const busY = 110;
 
             return (
@@ -155,7 +172,7 @@ export default function BusView({ state, trace }: Props) {
 
                 {/* Visible component box */}
                 <rect
-                  x={comp.x} y={comp.y} width="60" height="38" rx="6"
+                  x={comp.x} y={comp.y} width="90" height="38" rx="6"
                   fill={active ? comp.color + '25' : '#111827'}
                   stroke={active ? comp.color : '#1e293b'}
                   strokeWidth={active ? 2 : 1}
@@ -164,7 +181,7 @@ export default function BusView({ state, trace }: Props) {
 
                 {/* Invisible expanded hit area for tooltip — 6px padding around box */}
                 <rect
-                  x={comp.x - 6} y={comp.y - 6} width={72} height={50} rx="8"
+                  x={comp.x - 6} y={comp.y - 6} width={102} height={50} rx="8"
                   fill="transparent"
                   style={{ cursor: 'help' }}
                   onMouseEnter={(e) => handleMouseEnter(e, comp.id)}
@@ -182,8 +199,8 @@ export default function BusView({ state, trace }: Props) {
                 {/* Value */}
                 <text x={cx} y={comp.y + 30} textAnchor="middle"
                   fill={active ? comp.color : '#718096'}
-                  fontSize="9" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
-                  {hex(comp.value)} ({comp.value})
+                  fontSize="8" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
+                  {hex(comp.value)}
                 </text>
               </g>
             );
@@ -197,7 +214,7 @@ export default function BusView({ state, trace }: Props) {
                   : 'Reg' in t.source ? t.source.Reg
                   : 'Immediate' in t.source ? `#${t.source.Immediate}` : '?';
                 return (
-                  <text key={i} x="255" y="228" textAnchor="middle"
+                  <text key={i} x="320" y="228" textAnchor="middle"
                     fill="#94a3b8" fontSize="9" fontFamily="monospace">
                     {srcName} → {t.dest} [{hex(t.value)} = {t.value}]
                   </text>

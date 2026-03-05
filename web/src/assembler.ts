@@ -1,17 +1,19 @@
 // ============================================================================
-// assembler.ts — Two-pass assembler for GateStack 16-bit ISA
+// assembler.ts — Two-pass assembler for GateStack v2.0 32-bit ISA
 // ============================================================================
-// Encoding:
-//   ALU ops:   [opcode:8] [rA:4 | rB:4]               = 2 bytes
-//   PUSH/POP:  [opcode:8] [rA:4 | 0:4]                = 2 bytes
-//   OUT/IN:    [opcode:8] [rA:4 | 0:4]                = 2 bytes
-//   JMPR:      [opcode:8] [rA:4 | 0:4]                = 2 bytes
-//   RET/HALT:  [opcode:8] [0x00]                       = 2 bytes
-//   JMP/JC/JA/JE/CALL: [opcode:8] [addr_lo:8] [addr_hi:8] = 3 bytes
-//   LOAD/STORE: [opcode:8] [rA:4 | 0:4] [addr_lo:8] [addr_hi:8] = 4 bytes
-//   DATA:      [opcode:8] [rA:4 | 0:4] [imm_lo:8] [imm_hi:8]   = 4 bytes
-//   DB:        [byte:8]                                 = 1 byte
-//   DW:        [lo:8] [hi:8]                            = 2 bytes
+// Encoding (v2.0):
+//   ALU ops:   [opcode:8] [rA:4 | rB:4]                                 = 2 bytes
+//   PUSH/POP:  [opcode:8] [rA:4 | 0:4]                                  = 2 bytes
+//   OUT/IN:    [opcode:8] [rA:4 | 0:4]                                  = 2 bytes
+//   JMPR:      [opcode:8] [rA:4 | 0:4]                                  = 2 bytes
+//   LDRI/STRI/LDRI32/STRI32: [opcode:8] [rA:4 | rB:4]                  = 2 bytes
+//   RET/HALT:  [opcode:8] [0x00]                                         = 2 bytes
+//   JMP/JC/JA/JE/JZ/JNZ/CALL: [opcode:8] [addr:24 LE]                  = 4 bytes
+//   LOAD/STORE/LOAD32/STORE32: [opcode:8] [rA:4|0:4] [addr:24 LE]      = 5 bytes
+//   DATA:      [opcode:8] [rA:4 | 0:4] [imm:32 LE]                     = 6 bytes
+//   DB:        [byte:8]                                                   = 1 byte
+//   DW:        [lo:8] [hi:8]                                             = 2 bytes
+//   DD:        [b0:8] [b1:8] [b2:8] [b3:8]                              = 4 bytes
 // ============================================================================
 
 import { OP, instrSize } from './wasm-bridge';
@@ -41,62 +43,77 @@ const REGISTERS: Record<string, number> = {
 };
 
 const MNEMONICS: Record<string, { opcode: number; type: string }> = {
-  HALT:  { opcode: OP.HALT,  type: 'none' },
-  ADD:   { opcode: OP.ADD,   type: 'alu' },
-  SUB:   { opcode: OP.SUB,   type: 'alu' },
-  MUL:   { opcode: OP.MUL,   type: 'alu' },
-  MULH:  { opcode: OP.MULH,  type: 'alu' },
-  DIV:   { opcode: OP.DIV,   type: 'alu' },
-  MOD:   { opcode: OP.MOD,   type: 'alu' },
-  SHR:   { opcode: OP.SHR,   type: 'alu' },
-  SHL:   { opcode: OP.SHL,   type: 'alu' },
-  NOT:   { opcode: OP.NOT,   type: 'alu' },
-  AND:   { opcode: OP.AND,   type: 'alu' },
-  OR:    { opcode: OP.OR,    type: 'alu' },
-  XOR:   { opcode: OP.XOR,   type: 'alu' },
-  CMP:   { opcode: OP.CMP,   type: 'alu' },
-  MOV:   { opcode: OP.MOV,   type: 'alu' },
-  SHR8:  { opcode: OP.SHR8,  type: 'alu' },
-  SHL8:  { opcode: OP.SHL8,  type: 'alu' },
-  LOAD:  { opcode: OP.LOAD,  type: 'mem' },
-  STORE: { opcode: OP.STORE, type: 'mem' },
-  DATA:  { opcode: OP.DATA,  type: 'imm' },
-  PUSH:  { opcode: OP.PUSH,  type: 'reg1' },
-  POP:   { opcode: OP.POP,   type: 'reg1' },
-  LDRI:  { opcode: OP.LDRI,  type: 'alu' },
-  STRI:  { opcode: OP.STRI,  type: 'alu' },
-  JMP:   { opcode: OP.JMP,   type: 'jump' },
-  JC:    { opcode: OP.JC,    type: 'jump' },
-  JA:    { opcode: OP.JA,    type: 'jump' },
-  JE:    { opcode: OP.JE,    type: 'jump' },
-  JMPR:  { opcode: OP.JMPR,  type: 'reg1' },
-  CALL:  { opcode: OP.CALL,  type: 'jump' },
-  RET:   { opcode: OP.RET,   type: 'none' },
-  OUT:   { opcode: OP.OUT,   type: 'reg1' },
-  IN:    { opcode: OP.IN,    type: 'reg1' },
+  HALT:    { opcode: OP.HALT,    type: 'none' },
+  ADD:     { opcode: OP.ADD,     type: 'alu' },
+  SUB:     { opcode: OP.SUB,     type: 'alu' },
+  MUL:     { opcode: OP.MUL,     type: 'alu' },
+  MULH:    { opcode: OP.MULH,    type: 'alu' },
+  DIV:     { opcode: OP.DIV,     type: 'alu' },
+  MOD:     { opcode: OP.MOD,     type: 'alu' },
+  IDIV:    { opcode: OP.IDIV,    type: 'alu' },
+  IMOD:    { opcode: OP.IMOD,    type: 'alu' },
+  FPMUL:   { opcode: OP.FPMUL,   type: 'alu' },
+  SHR:     { opcode: OP.SHR,     type: 'alu' },
+  SHL:     { opcode: OP.SHL,     type: 'alu' },
+  SHR8:    { opcode: OP.SHR8,    type: 'alu' },
+  SHL8:    { opcode: OP.SHL8,    type: 'alu' },
+  SHRN:    { opcode: OP.SHRN,    type: 'alu' },
+  SHLN:    { opcode: OP.SHLN,    type: 'alu' },
+  NOT:     { opcode: OP.NOT,     type: 'alu' },
+  AND:     { opcode: OP.AND,     type: 'alu' },
+  OR:      { opcode: OP.OR,      type: 'alu' },
+  XOR:     { opcode: OP.XOR,     type: 'alu' },
+  CMP:     { opcode: OP.CMP,     type: 'alu' },
+  MOV:     { opcode: OP.MOV,     type: 'alu' },
+  LOAD:    { opcode: OP.LOAD,    type: 'mem' },
+  STORE:   { opcode: OP.STORE,   type: 'mem' },
+  LOAD32:  { opcode: OP.LOAD32,  type: 'mem' },
+  STORE32: { opcode: OP.STORE32, type: 'mem' },
+  DATA:    { opcode: OP.DATA,    type: 'imm' },
+  PUSH:    { opcode: OP.PUSH,    type: 'reg1' },
+  POP:     { opcode: OP.POP,     type: 'reg1' },
+  LDRI:    { opcode: OP.LDRI,    type: 'alu' },
+  STRI:    { opcode: OP.STRI,    type: 'alu' },
+  LDRI32:  { opcode: OP.LDRI32,  type: 'alu' },
+  STRI32:  { opcode: OP.STRI32,  type: 'alu' },
+  JMP:     { opcode: OP.JMP,     type: 'jump' },
+  JC:      { opcode: OP.JC,      type: 'jump' },
+  JA:      { opcode: OP.JA,      type: 'jump' },
+  JE:      { opcode: OP.JE,      type: 'jump' },
+  JZ:      { opcode: OP.JZ,      type: 'jump' },
+  JNZ:     { opcode: OP.JNZ,     type: 'jump' },
+  JMPR:    { opcode: OP.JMPR,    type: 'reg1' },
+  CALL:    { opcode: OP.CALL,    type: 'jump' },
+  RET:     { opcode: OP.RET,     type: 'none' },
+  OUT:     { opcode: OP.OUT,     type: 'reg1' },
+  IN:      { opcode: OP.IN,      type: 'reg1' },
 };
+
+// ── Number parser — supports 32-bit values ───────────────────────────────
 
 function parseNumber(s: string): number | null {
   s = s.trim();
-  // Character literal: 'A' or 'A
+  // Character literal: 'A' or 'A'
   if (s.startsWith("'") && s.length >= 2) {
     return s.charCodeAt(1);
   }
-  // Hex
+  // Hex — support up to 32-bit
   if (s.startsWith('0x') || s.startsWith('0X')) {
     const v = parseInt(s, 16);
-    return isNaN(v) ? null : v & 0xFFFF;
+    return isNaN(v) ? null : v >>> 0; // unsigned 32-bit
   }
-  // Binary
+  // Binary — support up to 32-bit
   if (s.startsWith('0b') || s.startsWith('0B')) {
     const v = parseInt(s.slice(2), 2);
-    return isNaN(v) ? null : v & 0xFFFF;
+    return isNaN(v) ? null : v >>> 0;
   }
-  // Decimal (possibly negative)
+  // Decimal (possibly negative — wrap to 32-bit unsigned)
   const v = parseInt(s, 10);
   if (isNaN(v)) return null;
-  return v < 0 ? (v + 65536) & 0xFFFF : v & 0xFFFF;
+  return v < 0 ? (v + 0x100000000) >>> 0 : v >>> 0;
 }
+
+// ── Line parser ──────────────────────────────────────────────────────────
 
 function parseLine(raw: string, lineNum: number): ParsedLine {
   // Strip comments
@@ -124,19 +141,25 @@ function parseLine(raw: string, lineNum: number): ParsedLine {
   return result;
 }
 
+// ── Instruction size for assembler types ─────────────────────────────────
+// These are the assembler "types" — maps to v2.0 encoding sizes
+
 function instrSizeForType(type: string): number {
   switch (type) {
-    case 'none':  return 2;
-    case 'alu':   return 2;
-    case 'reg1':  return 2;
-    case 'mem':   return 4;
-    case 'imm':   return 4;
-    case 'jump':  return 3;
+    case 'none':  return 2;  // HALT, RET
+    case 'alu':   return 2;  // ALU ops, LDRI, STRI, LDRI32, STRI32
+    case 'reg1':  return 2;  // PUSH, POP, OUT, IN, JMPR
+    case 'mem':   return 5;  // LOAD/STORE/LOAD32/STORE32: opcode + reg + addr24
+    case 'imm':   return 6;  // DATA: opcode + reg + imm32
+    case 'jump':  return 4;  // JMP/JC/JA/JE/JZ/JNZ/CALL: opcode + addr24
     case 'db':    return 1;
     case 'dw':    return 2;
+    case 'dd':    return 4;
     default:      return 2;
   }
 }
+
+// ── Assembler ────────────────────────────────────────────────────────────
 
 export function assemble(source: string): AssemblyResult {
   const lines = source.split('\n');
@@ -164,6 +187,8 @@ export function assemble(source: string): AssemblyResult {
       pc += 1;
     } else if (line.mnemonic === 'DW') {
       pc += 2;
+    } else if (line.mnemonic === 'DD') {
+      pc += 4;
     } else {
       const info = MNEMONICS[line.mnemonic];
       if (!info) {
@@ -206,9 +231,22 @@ export function assemble(source: string): AssemblyResult {
     return r;
   }
 
+  function emit24(val: number): void {
+    output.push(val & 0xFF);
+    output.push((val >> 8) & 0xFF);
+    output.push((val >> 16) & 0xFF);
+  }
+
+  function emit32(val: number): void {
+    output.push(val & 0xFF);
+    output.push((val >>> 8) & 0xFF);
+    output.push((val >>> 16) & 0xFF);
+    output.push((val >>> 24) & 0xFF);
+  }
+
   function emit16(val: number): void {
-    output.push(val & 0xFF);         // lo
-    output.push((val >> 8) & 0xFF);  // hi
+    output.push(val & 0xFF);
+    output.push((val >> 8) & 0xFF);
   }
 
   for (const line of parsed) {
@@ -221,10 +259,17 @@ export function assemble(source: string): AssemblyResult {
       continue;
     }
 
-    // DW: raw 16-bit word
+    // DW: raw 16-bit word (LE)
     if (line.mnemonic === 'DW') {
       const val = resolveValue(line.args[0] ?? '0', line.lineNum);
       emit16(val);
+      continue;
+    }
+
+    // DD: raw 32-bit dword (LE)
+    if (line.mnemonic === 'DD') {
+      const val = resolveValue(line.args[0] ?? '0', line.lineNum);
+      emit32(val);
       continue;
     }
 
@@ -252,28 +297,28 @@ export function assemble(source: string): AssemblyResult {
         break;
       }
 
-      case 'mem': { // LOAD R0, addr  |  STORE R0, addr
+      case 'mem': { // LOAD R0, addr | STORE R0, addr | LOAD32 | STORE32 — 5 bytes
         const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
         const addr = resolveValue(line.args[1] ?? '0', line.lineNum);
         output.push(info.opcode);
         output.push((rA << 4) | 0);
-        emit16(addr);
+        emit24(addr);  // 24-bit address LE
         break;
       }
 
-      case 'imm': { // DATA R0, value
+      case 'imm': { // DATA R0, value — 6 bytes
         const rA = resolveReg(line.args[0] ?? 'R0', line.lineNum);
         const val = resolveValue(line.args[1] ?? '0', line.lineNum);
         output.push(info.opcode);
         output.push((rA << 4) | 0);
-        emit16(val);
+        emit32(val);   // 32-bit immediate LE
         break;
       }
 
-      case 'jump': { // JMP label  |  CALL label
+      case 'jump': { // JMP label | CALL label — 4 bytes
         const target = resolveValue(line.args[0] ?? '0', line.lineNum);
         output.push(info.opcode);
-        emit16(target);
+        emit24(target);  // 24-bit address LE
         break;
       }
     }
@@ -291,7 +336,7 @@ export function assemble(source: string): AssemblyResult {
   };
 }
 
-// ── Disassembler ────────────────────────────────────────────────────────
+// ── Disassembler (v2.0) ──────────────────────────────────────────────────
 
 export function disassemble(memory: number[], startAddr: number, length: number): string[] {
   const lines: string[] = [];
@@ -301,8 +346,7 @@ export function disassemble(memory: number[], startAddr: number, length: number)
   while (pc < end) {
     const opcode = memory[pc];
     if (opcode === 0 && pc > 0) {
-      // Likely past end of program
-      lines.push(`${pc.toString(16).padStart(4, '0')}: 00          HALT`);
+      lines.push(`${hex6(pc)}: 00 00       HALT`);
       pc += 2;
       continue;
     }
@@ -317,29 +361,41 @@ export function disassemble(memory: number[], startAddr: number, length: number)
     const rB = regByte & 0x0F;
 
     let text = '';
-    const addrStr = pc.toString(16).padStart(4, '0');
+    const addrStr = hex6(pc);
 
-    if (opcode === 0x00) {
-      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      HALT`;
-    } else if (opcode >= OP.ADD && opcode <= OP.CMP) {
-      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      ${name} R${rA}, R${rB}`;
-    } else if (opcode === OP.LOAD || opcode === OP.STORE || opcode === OP.DATA) {
-      const val = (memory[pc + 3] << 8) | memory[pc + 2];
-      const bytes = `${hex8(opcode)} ${hex8(regByte)} ${hex8(memory[pc + 2])} ${hex8(memory[pc + 3])}`;
-      if (opcode === OP.DATA) {
-        text = `${addrStr}: ${bytes} DATA R${rA}, ${val}`;
-      } else {
-        text = `${addrStr}: ${bytes} ${name} R${rA}, [${val}]`;
-      }
-    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE || opcode === OP.CALL) {
-      const target = (memory[pc + 2] << 8) | memory[pc + 1];
-      text = `${addrStr}: ${hex8(opcode)} ${hex8(memory[pc + 1])} ${hex8(memory[pc + 2])}  ${name} ${target}`;
-    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
-      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      ${name} R${rA}`;
+    if (opcode === OP.HALT) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}            HALT`;
     } else if (opcode === OP.RET) {
-      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}      RET`;
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}            RET`;
+    } else if (opcode === OP.DATA) {
+      // 6 bytes: opcode + reg + imm32
+      const val = memory[pc + 2] | (memory[pc + 3] << 8)
+                | (memory[pc + 4] << 16) | (memory[pc + 5] << 24);
+      const hexB = [opcode, regByte, memory[pc+2], memory[pc+3], memory[pc+4], memory[pc+5]].map(hex8).join(' ');
+      text = `${addrStr}: ${hexB}  DATA R${rA}, ${val >>> 0}`;
+    } else if (opcode === OP.LOAD || opcode === OP.STORE || opcode === OP.LOAD32 || opcode === OP.STORE32) {
+      // 5 bytes: opcode + reg + addr24
+      const memAddr = memory[pc + 2] | (memory[pc + 3] << 8) | (memory[pc + 4] << 16);
+      const hexB = [opcode, regByte, memory[pc+2], memory[pc+3], memory[pc+4]].map(hex8).join(' ');
+      text = `${addrStr}: ${hexB}     ${name} R${rA}, [0x${hex6(memAddr)}]`;
+    } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE
+            || opcode === OP.JZ || opcode === OP.JNZ || opcode === OP.CALL) {
+      // 4 bytes: opcode + addr24
+      const target = memory[pc + 1] | (memory[pc + 2] << 8) | (memory[pc + 3] << 16);
+      const hexB = [opcode, memory[pc+1], memory[pc+2], memory[pc+3]].map(hex8).join(' ');
+      text = `${addrStr}: ${hexB}        ${name} 0x${hex6(target)}`;
+    } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT
+            || opcode === OP.IN || opcode === OP.JMPR) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}            ${name} R${rA}`;
+    } else if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
+            || opcode === OP.SHRN || opcode === OP.SHLN
+            || opcode === OP.IDIV || opcode === OP.IMOD
+            || opcode === OP.FPMUL
+            || opcode === OP.LDRI || opcode === OP.STRI
+            || opcode === OP.LDRI32 || opcode === OP.STRI32) {
+      text = `${addrStr}: ${hex8(opcode)} ${hex8(regByte)}            ${name} R${rA}, R${rB}`;
     } else {
-      text = `${addrStr}: ${hex8(opcode)}          ???`;
+      text = `${addrStr}: ${hex8(opcode)}               ???`;
     }
 
     lines.push(text);
@@ -350,5 +406,9 @@ export function disassemble(memory: number[], startAddr: number, length: number)
 }
 
 function hex8(n: number): string {
-  return n.toString(16).padStart(2, '0').toUpperCase();
+  return (n & 0xFF).toString(16).padStart(2, '0').toUpperCase();
+}
+
+function hex6(n: number): string {
+  return n.toString(16).padStart(6, '0').toUpperCase();
 }

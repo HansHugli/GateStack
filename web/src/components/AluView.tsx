@@ -1,7 +1,7 @@
 import React from 'react';
 import { CycleTrace } from '../wasm-bridge';
 
-const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0').toUpperCase();
+const hex = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0').toUpperCase();
 const bin = (n: number) => n.toString(2).padStart(8, '0');
 
 const ALU_STYLES = `
@@ -12,8 +12,8 @@ const ALU_STYLES = `
 interface Props { trace: CycleTrace | null; }
 
 export default function AluView({ trace }: Props) {
-  const aluStep = trace?.steps?.find(s => s.AluOperation);
-  const alu = aluStep?.AluOperation;
+  const aluStep = trace?.steps?.find(s => 'AluOperation' in s);
+  const alu = aluStep && 'AluOperation' in aluStep ? (aluStep as any).AluOperation : undefined;
   const active = !!alu;
 
   // ALU polygon: left edge at x=70, top-left at y=20, bottom-left at y=80

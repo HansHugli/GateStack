@@ -109,13 +109,12 @@ export default function Toolbar({ computer }: Props) {
       </span>
 
       {/* Engine toggle */}
-      {computer.wasmAvailable && (
-        <button
-          onClick={() => computer.switchEngine(computer.engineType === 'wasm' ? 'js' : 'wasm')}
-          title={`Engine: ${computer.engineType.toUpperCase()}. Click to switch.`}
+      <button
+          onClick={() => computer.wasmAvailable ? computer.switchEngine(computer.engineType === 'wasm' ? 'js' : 'wasm') : null}
+          title={computer.wasmAvailable ? `Engine: ${computer.engineType.toUpperCase()}. Click to switch.` : 'WASM not available'}
           style={{
             padding: '1px 6px', fontSize: '0.58rem', fontFamily: 'var(--font-mono)',
-            fontWeight: 600, borderRadius: 3, cursor: 'pointer', transition: 'all 0.15s',
+            fontWeight: 600, borderRadius: 3, cursor: computer.wasmAvailable ? 'pointer' : 'default', transition: 'all 0.15s',
             marginLeft: 4,
             border: `1px solid ${computer.engineType === 'wasm' ? '#22d3ee40' : 'var(--border-subtle)'}`,
             background: computer.engineType === 'wasm' ? 'rgba(34,211,238,0.1)' : 'transparent',
@@ -124,7 +123,6 @@ export default function Toolbar({ computer }: Props) {
         >
           {computer.engineType === 'wasm' ? '⚡ WASM' : '📜 JS'}
         </button>
-      )}
 
       <div style={{ flex: 1 }} />
 

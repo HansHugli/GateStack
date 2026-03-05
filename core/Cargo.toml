@@ -2,7 +2,7 @@
 name = "gatestack-core"
 version = "1.0.0"
 edition = "2021"
-description = "GateStack 16-bit CPU simulator — WASM core"
+description = "GateStack 32-bit CPU simulator — WASM core"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

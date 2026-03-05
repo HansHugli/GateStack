@@ -7,7 +7,7 @@ import { createComputer, IComputer, CpuState, CycleTrace, EngineType } from '../
 
 interface Snapshot {
   state: CpuState;
-  memory: number[];
+  memory: Uint8Array;
   console: number[];
 }
 
@@ -60,7 +60,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const cpuHistory = useRef<CpuState[]>([]);
 
   const [state, setState] = useState<CpuState | null>(null);
-  const memoryRef = useRef<number[]>(new Array(65536).fill(0));
+  const memoryRef = useRef<number[]>(new Array(4_194_304).fill(0));
   const [memoryVersion, setMemoryVersion] = useState(0);
   const [trace, setTrace] = useState<CycleTrace | null>(null);
   const [traceHistory, setTraceHistory] = useState<CpuState[]>([]);
@@ -204,14 +204,18 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
           }
           halted = halted || computerRef.current.isHalted();
         } else if (speed >= 10000000) {
-          // Time-budgeted execution: run until ~14ms elapsed or vsync
-          // Use large batch to maximize throughput between vsync events
-          const BATCH = 50000000; // 50M per batch — will break early on vsync
+          // Time-budgeted execution: run batches until ~14ms elapsed or vsync
+          const BATCH = 5000000; // 5M per batch — check vsync/time between batches
           const deadline = performance.now() + 14; // 14ms budget (~60fps)
-          const n = computerRef.current.run(BATCH);
-          executed += n;
-          halted = computerRef.current.isHalted();
-          hitBreakpoint = n < BATCH && !halted && breakpoints.has(computerRef.current.getPc());
+          while (performance.now() < deadline) {
+            const n = computerRef.current.run(BATCH);
+            executed += n;
+            halted = computerRef.current.isHalted();
+            hitBreakpoint = n < BATCH && !halted && breakpoints.has(computerRef.current.getPc());
+            if (halted || hitBreakpoint || computerRef.current.isWaitingForInput()) break;
+            // If run returned less than BATCH, it hit vsync — break to render frame
+            if (n < BATCH) break;
+          }
         } else {
           executed = computerRef.current.run(speed);
           halted = computerRef.current.isHalted();

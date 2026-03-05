@@ -17,7 +17,7 @@ function createWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
-    title: 'GateStack — 16-bit Computer Simulator',
+    title: 'GateStack — 32-bit Computer Simulator',
     backgroundColor: '#06080f',
     show: false,
     webPreferences: {
@@ -110,7 +110,7 @@ function buildMenu() {
               type: 'info',
               title: 'About GateStack',
               message: `GateStack v${version}`,
-              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 16-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by J. Clark Scott's "But How Do It Know?"\nand nand2tetris.org by Nisan & Schocken.`,
+              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 32-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by J. Clark Scott's "But How Do It Know?"\nand nand2tetris.org by Nisan & Schocken.`,
             });
           },
         },

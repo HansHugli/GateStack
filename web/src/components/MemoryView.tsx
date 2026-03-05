@@ -8,16 +8,19 @@ interface Props {
 }
 
 const hex8 = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
-const hex16 = (n: number) => n.toString(16).padStart(4, '0').toUpperCase();
+const hex24 = (n: number) => n.toString(16).padStart(6, '0').toUpperCase();
 
+const MEM_SIZE = 4_194_304; // 4MB
 const PAGE_SIZE = 256;
 const COLS = 16;
 const ROWS = PAGE_SIZE / COLS;
 
 const REGIONS = [
-  { label: 'Code',  page: 0, color: '#3b82f6' },
-  { label: 'Stack', page: Math.floor(0x7F00 / PAGE_SIZE), color: '#a855f7' },
-  { label: 'Video', page: Math.floor(0x8000 / PAGE_SIZE), color: '#a855f7' },
+  { label: 'Code',    page: 0, color: '#3b82f6' },
+  { label: 'Stack',   page: Math.floor(0x3BFFFF / PAGE_SIZE), color: '#a855f7' },
+  { label: 'BackBuf', page: Math.floor(0x3C0000 / PAGE_SIZE), color: '#f59e0b' },
+  { label: 'Video',   page: Math.floor(0x3D0000 / PAGE_SIZE), color: '#ef4444' },
+  { label: 'Palette', page: Math.floor(0x3E0000 / PAGE_SIZE), color: '#22c55e' },
 ];
 
 const toAscii = (b: number) => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '·';
@@ -65,7 +68,7 @@ function EditCell(props: {
 export default function MemoryView({ memory, memoryVersion, currentAddress, onPoke }: Props) {
   const [page, setPage] = useState(0);
   const [editAddr, setEditAddr] = useState<number | null>(null);
-  const totalPages = Math.ceil(65536 / PAGE_SIZE);
+  const totalPages = Math.ceil(MEM_SIZE / PAGE_SIZE);
   const pcPage = Math.floor(currentAddress / PAGE_SIZE);
 
   const pageStart = page * PAGE_SIZE;
@@ -92,10 +95,21 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
         <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
           <NavBtn onClick={() => setPage(0)} disabled={page === 0}>⏮</NavBtn>
           <NavBtn onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>◀</NavBtn>
-          <span style={{
-            fontSize: '0.58rem', fontFamily: 'var(--font-mono)',
-            color: 'var(--text-secondary)', minWidth: 36, textAlign: 'center',
-          }}>{page}/{totalPages - 1}</span>
+          <input
+            type="text"
+            value={page}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10);
+              if (!isNaN(v) && v >= 0 && v < totalPages) setPage(v);
+            }}
+            style={{
+              width: 44, fontSize: '0.55rem', fontFamily: 'var(--font-mono)',
+              color: 'var(--text-secondary)', textAlign: 'center',
+              background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+              borderRadius: 3, padding: '1px 2px', outline: 'none',
+            }}
+          />
+          <span style={{ fontSize: '0.5rem', color: 'var(--text-dim)' }}>/{totalPages - 1}</span>
           <NavBtn onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}>▶</NavBtn>
           <NavBtn onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}>⏭</NavBtn>
         </div>
@@ -107,15 +121,15 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
         color: 'var(--text-dim)', marginBottom: 4,
         display: 'flex', gap: 8,
       }}>
-        <span>0x{hex16(pageStart)}–0x{hex16(pageStart + PAGE_SIZE - 1)}</span>
+        <span>0x{hex24(pageStart)}–0x{hex24(pageStart + PAGE_SIZE - 1)}</span>
         <span style={{ color: 'var(--text-dim)' }}>({pageStart}–{pageStart + PAGE_SIZE - 1})</span>
-        <span>64KB total</span>
+        <span>4MB total</span>
       </div>
 
       {/* ── Quick-jump region buttons ── */}
       <div style={{ display: 'flex', gap: 3, marginBottom: 6, flexWrap: 'wrap' }}>
         <RegionBtn active={page === pcPage} color="#f59e0b" onClick={() => setPage(pcPage)}>
-          PC:{hex16(currentAddress)}
+          PC:{hex24(currentAddress)}
         </RegionBtn>
         {REGIONS.map(r => (
           <RegionBtn key={r.label} active={page === r.page} color={r.color} onClick={() => setPage(r.page)}>
@@ -129,7 +143,7 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
 
         {/* Column headers */}
         <div style={{ display: 'flex', alignItems: 'baseline' }}>
-          <span style={{ width: 52, flexShrink: 0 }} />
+          <span style={{ width: 62, flexShrink: 0 }} />
           {Array.from({ length: COLS }, (_, i) => (
             <span key={i} style={{
               width: 22, textAlign: 'center',
@@ -159,11 +173,11 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
             }}>
               {/* Row address */}
               <span style={{
-                width: 52, flexShrink: 0,
+                width: 62, flexShrink: 0,
                 color: 'var(--text-muted)', fontSize: '0.55rem',
                 fontWeight: 500,
                 paddingRight: 4,
-              }}>{hex16(rowAddr)}</span>
+              }}>{hex24(rowAddr)}</span>
 
               {/* Hex cells */}
               {Array.from({ length: COLS }, (_, col) => {
@@ -190,7 +204,7 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
                       fontWeight: isPC ? 700 : 400,
                       marginLeft: col > 0 && col % 8 === 0 ? 4 : 0,
                     }}
-                    title={`[0x${hex16(addr)}] (${addr}) = ${val} (0x${hex8(val)})${val >= 32 && val < 127 ? " '" + String.fromCharCode(val) + "'" : ''}`}
+                    title={`[0x${hex24(addr)}] (${addr}) = ${val} (0x${hex8(val)})${val >= 32 && val < 127 ? " '" + String.fromCharCode(val) + "'" : ''}`}
                   >
                     {hex8(val)}
                   </span>

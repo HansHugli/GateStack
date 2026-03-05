@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GateStack v2.0 — Architecture Overview</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e17;
+    --surface: #111827;
+    --surface2: #1a2235;
+    --border: #2a3654;
+    --border-hi: #3b82f6;
+    --text: #e2e8f0;
+    --text-dim: #64748b;
+    --accent: #3b82f6;
+    --accent2: #8b5cf6;
+    --green: #10b981;
+    --orange: #f59e0b;
+    --red: #ef4444;
+    --cyan: #06b6d4;
+    --pink: #ec4899;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 32px;
+    min-height: 100vh;
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+
+  .header .subtitle {
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .header .badge-row {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  .badge.blue { background: rgba(59,130,246,0.15); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); }
+  .badge.purple { background: rgba(139,92,246,0.15); color: var(--accent2); border: 1px solid rgba(139,92,246,0.3); }
+  .badge.green { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+  .badge.orange { background: rgba(245,158,11,0.15); color: var(--orange); border: 1px solid rgba(245,158,11,0.3); }
+  .badge.cyan { background: rgba(6,182,212,0.15); color: var(--cyan); border: 1px solid rgba(6,182,212,0.3); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .full-width { grid-column: 1 / -1; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface2);
+  }
+
+  .card-header .icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .card-header h2 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+
+  .card-body { padding: 16px; }
+
+  /* Memory Map */
+  .mem-map {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    font-size: 12px;
+  }
+
+  .mem-block {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--border);
+    margin-top: -1px;
+    position: relative;
+    transition: all 0.15s;
+  }
+
+  .mem-block:hover {
+    border-color: var(--border-hi);
+    z-index: 1;
+    background: rgba(59,130,246,0.03);
+  }
+
+  .mem-addr {
+    width: 160px;
+    padding: 8px 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+
+  .mem-info {
+    flex: 1;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .mem-label { font-weight: 600; }
+  .mem-size { color: var(--text-dim); font-size: 11px; }
+
+  .mem-bar {
+    width: 6px;
+    flex-shrink: 0;
+  }
+
+  .bar-program { background: var(--accent); }
+  .bar-stack { background: var(--orange); }
+  .bar-vram { background: var(--green); }
+  .bar-palette { background: var(--pink); }
+  .bar-reserved { background: var(--border); }
+
+  /* Register file */
+  .reg-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+
+  .reg-cell {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    text-align: center;
+    font-size: 11px;
+    transition: border-color 0.15s;
+  }
+
+  .reg-cell:hover { border-color: var(--accent); }
+
+  .reg-name {
+    font-weight: 700;
+    color: var(--cyan);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .reg-width {
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+
+  .reg-cell.special { border-color: var(--accent2); }
+  .reg-cell.special .reg-name { color: var(--accent2); }
+
+  /* ISA table */
+  .isa-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  .isa-table th {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .isa-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(42,54,84,0.4);
+    vertical-align: top;
+  }
+
+  .isa-table tr:hover td { background: rgba(59,130,246,0.04); }
+
+  .opcode { color: var(--orange); font-weight: 600; }
+  .mnemonic { color: var(--cyan); font-weight: 600; }
+  .new-tag {
+    background: rgba(16,185,129,0.15);
+    color: var(--green);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+    letter-spacing: 0.5px;
+  }
+
+  .isa-section {
+    padding: 8px 8px 4px;
+    font-weight: 700;
+    color: var(--accent2);
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(139,92,246,0.05);
+  }
+
+  /* Encoding formats */
+  .encoding-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .enc-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+
+  .enc-label {
+    font-weight: 600;
+    color: var(--orange);
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+
+  .enc-bytes {
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+  }
+
+  .byte-box {
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-align: center;
+    min-width: 50px;
+  }
+
+  .byte-op { background: rgba(59,130,246,0.2); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); }
+  .byte-reg { background: rgba(6,182,212,0.2); color: var(--cyan); border: 1px solid rgba(6,182,212,0.3); }
+  .byte-addr { background: rgba(245,158,11,0.2); color: var(--orange); border: 1px solid rgba(245,158,11,0.3); }
+  .byte-imm { background: rgba(139,92,246,0.2); color: var(--accent2); border: 1px solid rgba(139,92,246,0.3); }
+
+  .enc-total {
+    margin-left: 8px;
+    color: var(--text-dim);
+    font-size: 10px;
+    align-self: center;
+  }
+
+  /* Palette preview */
+  .palette-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+    margin-top: 8px;
+  }
+
+  .palette-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    cursor: crosshair;
+    position: relative;
+  }
+
+  .palette-swatch:hover {
+    outline: 2px solid white;
+    outline-offset: 1px;
+    z-index: 1;
+  }
+
+  .palette-info {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .palette-info-row { display: flex; gap: 16px; }
+  .palette-info-label { color: var(--text-dim); width: 90px; }
+
+  /* Video spec */
+  .spec-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .spec-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 12px;
+  }
+
+  .spec-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+
+  .spec-value {
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  /* Phase timeline */
+  .phases {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .phase-item {
+    display: flex;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(42,54,84,0.4);
+    align-items: flex-start;
+  }
+
+  .phase-item:last-child { border-bottom: none; }
+
+  .phase-num {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  .phase-num.active { background: var(--accent); color: white; }
+  .phase-num.pending { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+
+  .phase-content { flex: 1; }
+  .phase-title { font-weight: 600; margin-bottom: 2px; }
+  .phase-files { color: var(--text-dim); font-size: 11px; }
+  .phase-files code { color: var(--cyan); font-size: 11px; }
+
+  /* Fixed point comparison */
+  .fp-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .fp-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+  }
+
+  .fp-box.old { border-color: rgba(245,158,11,0.3); }
+  .fp-box.new { border-color: rgba(16,185,129,0.3); }
+
+  .fp-version {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+
+  .fp-box.old .fp-version { color: var(--orange); }
+  .fp-box.new .fp-version { color: var(--green); }
+
+  .fp-format {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .fp-box.old .fp-format { color: var(--orange); }
+  .fp-box.new .fp-format { color: var(--green); }
+
+  .fp-detail {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .fp-detail strong { color: var(--text); }
+
+  .bit-diagram {
+    display: flex;
+    margin: 12px 0 8px;
+    justify-content: center;
+  }
+
+  .bit-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .bit-cells {
+    display: flex;
+  }
+
+  .bit-cell {
+    width: 14px;
+    height: 20px;
+    border: 1px solid rgba(255,255,255,0.1);
+    margin-right: -1px;
+    font-size: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.4);
+  }
+
+  .bit-int { background: rgba(59,130,246,0.15); }
+  .bit-frac { background: rgba(139,92,246,0.15); }
+
+  .bit-label {
+    font-size: 9px;
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  .bit-int-label { color: var(--accent); }
+  .bit-frac-label { color: var(--accent2); }
+
+  .decisions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .decision {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: var(--surface2);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .decision-q { color: var(--text-dim); flex: 1; }
+
+  .decision-a {
+    font-weight: 600;
+    color: var(--green);
+    white-space: nowrap;
+  }
+
+  .decision-icon {
+    color: var(--green);
+    font-size: 14px;
+  }
+
+  .scrollable-table {
+    max-height: 500px;
+    overflow-y: auto;
+  }
+
+  .scrollable-table::-webkit-scrollbar { width: 6px; }
+  .scrollable-table::-webkit-scrollbar-track { background: transparent; }
+  .scrollable-table::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ GateStack v2.0 — 32-bit Architecture</h1>
+  <div class="subtitle">Finalized design spec — all decisions locked</div>
+  <div class="badge-row">
+    <span class="badge blue">32-bit registers</span>
+    <span class="badge purple">16.16 fixed-point</span>
+    <span class="badge green">4MB RAM</span>
+    <span class="badge orange">256×256 8bpp</span>
+    <span class="badge cyan">43 opcodes</span>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- MEMORY MAP -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(59,130,246,0.2);color:var(--accent);">M</div>
+      <h2>Memory Map — 4MB (22-bit address)</h2>
+    </div>
+    <div class="card-body">
+      <div class="mem-map">
+        <div class="mem-block">
+          <div class="mem-bar bar-program"></div>
+          <div class="mem-addr">0x000000 – 0x3EEFFF</div>
+          <div class="mem-info">
+            <span class="mem-label">Program + Data + Stack</span>
+            <span class="mem-size">4,028 KB</span>
+          </div>
+        </div>
+        <div class="mem-block">
+          <div class="mem-bar bar-stack"></div>
+          <div class="mem-addr" style="color:var(--orange);">↑ SP init: 0x3EEFFF</div>
+          <div class="mem-info">
+            <span class="mem-label" style="color:var(--orange);">Stack grows downward ↓</span>
+            <span class="mem-size"></span>
+          </div>
+        </div>
+        <div class="mem-block">
+          <div class="mem-bar bar-palette"></div>
+          <div class="mem-addr">0x3EF000 – 0x3EF3FF</div>
+          <div class="mem-info">
+            <span class="mem-label" style="color:var(--pink);">Palette RAM (256 × 4 bytes)</span>
+            <span class="mem-size">1 KB</span>
+          </div>
+        </div>
+        <div class="mem-block">
+          <div class="mem-bar bar-reserved"></div>
+          <div class="mem-addr">0x3EF400 – 0x3EFFFF</div>
+          <div class="mem-info">
+            <span class="mem-label" style="color:var(--text-dim);">Reserved</span>
+            <span class="mem-size">3 KB</span>
+          </div>
+        </div>
+        <div class="mem-block">
+          <div class="mem-bar bar-vram"></div>
+          <div class="mem-addr">0x3F0000 – 0x3FFFFF</div>
+          <div class="mem-info">
+            <span class="mem-label" style="color:var(--green);">Video RAM (256×256 × 8bpp)</span>
+            <span class="mem-size">64 KB</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="palette-info">
+        <div class="palette-info-row">
+          <span class="palette-info-label">Vsync trigger:</span>
+          <span>STORE to <span class="opcode">0x3FFFFF</span></span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Palette format:</span>
+          <span>[ R, G, B, _ ] × 256 at <span class="opcode">0x3EF000</span></span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Palette update:</span>
+          <span style="color:var(--green);">Applied on vsync</span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Byte order:</span>
+          <span>Little-endian for multi-byte values</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REGISTERS -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(6,182,212,0.2);color:var(--cyan);">R</div>
+      <h2>Register File</h2>
+    </div>
+    <div class="card-body">
+      <div class="reg-grid">
+        <div class="reg-cell"><span class="reg-name">R0</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R1</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R2</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R3</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R4</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R5</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R6</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R7</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R8</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R9</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R10</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R11</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R12</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R13</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R14</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell"><span class="reg-name">R15</span><span class="reg-width">32-bit</span></div>
+      </div>
+
+      <div style="margin-top: 12px; display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
+        <div class="reg-cell special"><span class="reg-name">IAR (PC)</span><span class="reg-width">32-bit</span></div>
+        <div class="reg-cell special"><span class="reg-name">SP</span><span class="reg-width">32-bit → 0x3EEFFF</span></div>
+        <div class="reg-cell special"><span class="reg-name">IR</span><span class="reg-width">8-bit opcode</span></div>
+        <div class="reg-cell special"><span class="reg-name">FLAGS</span><span class="reg-width">C Z A&gt;B Eq</span></div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <div style="font-weight:600; margin-bottom: 8px; font-size: 12px;">Fixed-Point Comparison</div>
+        <div class="fp-compare">
+          <div class="fp-box old">
+            <div class="fp-version">v1.0</div>
+            <div class="fp-format">8.8</div>
+            <div class="bit-diagram">
+              <div class="bit-section">
+                <div class="bit-cells">
+                  <div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div>
+                  <div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div><div class="bit-cell bit-int"></div>
+                </div>
+                <div class="bit-label bit-int-label">8 int</div>
+              </div>
+              <div class="bit-section" style="margin-left:2px;">
+                <div class="bit-cells">
+                  <div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div>
+                  <div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div><div class="bit-cell bit-frac"></div>
+                </div>
+                <div class="bit-label bit-frac-label">8 frac</div>
+              </div>
+            </div>
+            <div class="fp-detail">
+              Precision: <strong>1/256</strong><br>
+              Zoom levels: <strong>~6</strong>
+            </div>
+          </div>
+          <div class="fp-box new">
+            <div class="fp-version">v2.0</div>
+            <div class="fp-format">16.16</div>
+            <div class="bit-diagram">
+              <div class="bit-section">
+                <div class="bit-cells">
+                  <div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div>
+                  <div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div>
+                  <div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div>
+                  <div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div><div class="bit-cell bit-int" style="width:7px;"></div>
+                </div>
+                <div class="bit-label bit-int-label">16 int</div>
+              </div>
+              <div class="bit-section" style="margin-left:2px;">
+                <div class="bit-cells">
+                  <div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div>
+                  <div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div>
+                  <div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div>
+                  <div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div><div class="bit-cell bit-frac" style="width:7px;"></div>
+                </div>
+                <div class="bit-label bit-frac-label">16 frac</div>
+              </div>
+            </div>
+            <div class="fp-detail">
+              Precision: <strong>1/65536</strong><br>
+              Zoom levels: <strong>~50+</strong>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); text-align: center;">
+          MUL→low32 &nbsp;|&nbsp; MULH→high32 &nbsp;|&nbsp; result = (MULH &lt;&lt; 16) | (MUL &gt;&gt; 16)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INSTRUCTION ENCODING -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(245,158,11,0.2);color:var(--orange);">E</div>
+      <h2>Instruction Encoding Formats</h2>
+    </div>
+    <div class="card-body">
+      <div class="encoding-list">
+        <div class="enc-item">
+          <div class="enc-label">ALU / PUSH / POP / OUT / IN / JMPR / LDRI / STRI — 2 bytes</div>
+          <div class="enc-bytes">
+            <div class="byte-box byte-op">opcode:8</div>
+            <div class="byte-box byte-reg">rA:4 | rB:4</div>
+          </div>
+        </div>
+        <div class="enc-item">
+          <div class="enc-label">HALT / RET — 2 bytes</div>
+          <div class="enc-bytes">
+            <div class="byte-box byte-op">opcode:8</div>
+            <div class="byte-box byte-reg">0x00</div>
+          </div>
+        </div>
+        <div class="enc-item">
+          <div class="enc-label">JMP / JC / JA / JE / JZ / JNZ / CALL — 4 bytes</div>
+          <div class="enc-bytes">
+            <div class="byte-box byte-op">opcode:8</div>
+            <div class="byte-box byte-addr">addr[7:0]</div>
+            <div class="byte-box byte-addr">addr[15:8]</div>
+            <div class="byte-box byte-addr">addr[23:16]</div>
+          </div>
+        </div>
+        <div class="enc-item">
+          <div class="enc-label">LOAD / STORE / LOAD32 / STORE32 — 5 bytes</div>
+          <div class="enc-bytes">
+            <div class="byte-box byte-op">opcode:8</div>
+            <div class="byte-box byte-reg">rA:4 | 0:4</div>
+            <div class="byte-box byte-addr">addr[7:0]</div>
+            <div class="byte-box byte-addr">addr[15:8]</div>
+            <div class="byte-box byte-addr">addr[23:16]</div>
+          </div>
+        </div>
+        <div class="enc-item">
+          <div class="enc-label">DATA — 6 bytes</div>
+          <div class="enc-bytes">
+            <div class="byte-box byte-op">opcode:8</div>
+            <div class="byte-box byte-reg">rA:4 | 0:4</div>
+            <div class="byte-box byte-imm">imm[7:0]</div>
+            <div class="byte-box byte-imm">imm[15:8]</div>
+            <div class="byte-box byte-imm">imm[23:16]</div>
+            <div class="byte-box byte-imm">imm[31:24]</div>
+          </div>
+        </div>
+        <div class="enc-item">
+          <div class="enc-label">Directives</div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">
+            <span class="mnemonic">DB</span> val — 1 byte &nbsp;|&nbsp;
+            <span class="mnemonic">DW</span> val — 2 bytes LE &nbsp;|&nbsp;
+            <span class="mnemonic">DD</span> val — 4 bytes LE <span class="new-tag">NEW</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIDEO SPEC -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(16,185,129,0.2);color:var(--green);">V</div>
+      <h2>Video System</h2>
+    </div>
+    <div class="card-body">
+      <div class="spec-grid">
+        <div class="spec-item">
+          <div class="spec-label">Resolution</div>
+          <div class="spec-value">256 × 256</div>
+        </div>
+        <div class="spec-item">
+          <div class="spec-label">Color Depth</div>
+          <div class="spec-value">8 bpp <span style="font-size:11px;color:var(--text-dim);font-weight:400;">(256 colors)</span></div>
+        </div>
+        <div class="spec-item">
+          <div class="spec-label">VRAM Size</div>
+          <div class="spec-value">64 KB</div>
+        </div>
+        <div class="spec-item">
+          <div class="spec-label">Pixel Format</div>
+          <div class="spec-value">1 byte/px</div>
+        </div>
+        <div class="spec-item">
+          <div class="spec-label">Vsync Trigger</div>
+          <div class="spec-value" style="font-size:12px;">STORE → 0x3FFFFF</div>
+        </div>
+        <div class="spec-item">
+          <div class="spec-label">Palette</div>
+          <div class="spec-value" style="font-size:12px;">Programmable <span class="new-tag">NEW</span></div>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <div style="font-weight:600; margin-bottom:8px; font-size:12px;">Default Palette (256 colors)</div>
+        <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">
+          [0–15] v1.0 compatible &nbsp;|&nbsp; [16–255] HSV rainbow gradient
+        </div>
+        <div class="palette-preview" id="palette"></div>
+        <div id="palette-tooltip" style="margin-top: 8px; font-size: 11px; color: var(--text-dim); height: 16px;"></div>
+      </div>
+
+      <div class="palette-info" style="margin-top: 12px;">
+        <div style="font-weight:600; margin-bottom:4px; color:var(--pink);">Programmable Palette</div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Base address:</span>
+          <span class="opcode">0x3EF000</span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Entry format:</span>
+          <span>[ R:8, G:8, B:8, _:8 ] — STORE32 friendly</span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Color N addr:</span>
+          <span>0x3EF000 + N × 4</span>
+        </div>
+        <div class="palette-info-row">
+          <span class="palette-info-label">Update timing:</span>
+          <span style="color:var(--green);">Applied on vsync (tear-free)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ISA TABLE -->
+  <div class="card full-width">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(139,92,246,0.2);color:var(--accent2);">I</div>
+      <h2>Complete Instruction Set — 43 Opcodes</h2>
+    </div>
+    <div class="card-body">
+      <div class="scrollable-table">
+        <table class="isa-table">
+          <thead>
+            <tr>
+              <th style="width:70px;">Opcode</th>
+              <th style="width:160px;">Mnemonic</th>
+              <th style="width:60px;">Size</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="4" class="isa-section">Control</td></tr>
+            <tr><td class="opcode">0x00</td><td class="mnemonic">HALT</td><td>2B</td><td>Stop execution</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Arithmetic</td></tr>
+            <tr><td class="opcode">0x01</td><td class="mnemonic">ADD rA, rB</td><td>2B</td><td>rA = rA + rB (32-bit, sets carry)</td></tr>
+            <tr><td class="opcode">0x02</td><td class="mnemonic">SUB rA, rB</td><td>2B</td><td>rA = rA − rB (32-bit, sets carry)</td></tr>
+            <tr><td class="opcode">0x03</td><td class="mnemonic">MUL rA, rB</td><td>2B</td><td>rA = low32(rA × rB) unsigned</td></tr>
+            <tr><td class="opcode">0x0D</td><td class="mnemonic">MULH rA, rB</td><td>2B</td><td>rA = high32(rA × rB) unsigned</td></tr>
+            <tr><td class="opcode">0x04</td><td class="mnemonic">DIV rA, rB</td><td>2B</td><td>rA = rA / rB unsigned</td></tr>
+            <tr><td class="opcode">0x05</td><td class="mnemonic">MOD rA, rB</td><td>2B</td><td>rA = rA % rB unsigned</td></tr>
+            <tr><td class="opcode">0x29</td><td class="mnemonic">IDIV rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>rA = rA / rB signed (two's complement)</td></tr>
+            <tr><td class="opcode">0x2A</td><td class="mnemonic">IMOD rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>rA = rA % rB signed</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Bitwise &amp; Shift</td></tr>
+            <tr><td class="opcode">0x06</td><td class="mnemonic">SHR rA</td><td>2B</td><td>Logical shift right 1 bit</td></tr>
+            <tr><td class="opcode">0x07</td><td class="mnemonic">SHL rA</td><td>2B</td><td>Shift left 1 bit</td></tr>
+            <tr><td class="opcode">0x0F</td><td class="mnemonic">SHR8 rA</td><td>2B</td><td>Shift right 8 bits</td></tr>
+            <tr><td class="opcode">0x17</td><td class="mnemonic">SHL8 rA</td><td>2B</td><td>Shift left 8 bits</td></tr>
+            <tr><td class="opcode">0x21</td><td class="mnemonic">SHRN rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>rA = rA &gt;&gt; rB (shift by N bits)</td></tr>
+            <tr><td class="opcode">0x22</td><td class="mnemonic">SHLN rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>rA = rA &lt;&lt; rB (shift by N bits)</td></tr>
+            <tr><td class="opcode">0x08</td><td class="mnemonic">NOT rA</td><td>2B</td><td>Bitwise NOT (32-bit)</td></tr>
+            <tr><td class="opcode">0x09</td><td class="mnemonic">AND rA, rB</td><td>2B</td><td>Bitwise AND</td></tr>
+            <tr><td class="opcode">0x0A</td><td class="mnemonic">OR rA, rB</td><td>2B</td><td>Bitwise OR</td></tr>
+            <tr><td class="opcode">0x0B</td><td class="mnemonic">XOR rA, rB</td><td>2B</td><td>Bitwise XOR</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Compare &amp; Move</td></tr>
+            <tr><td class="opcode">0x0C</td><td class="mnemonic">CMP rA, rB</td><td>2B</td><td>Compare rA vs rB, set flags</td></tr>
+            <tr><td class="opcode">0x0E</td><td class="mnemonic">MOV rA, rB</td><td>2B</td><td>rA = rB</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Memory (Byte)</td></tr>
+            <tr><td class="opcode">0x10</td><td class="mnemonic">LOAD rA, [addr24]</td><td>5B</td><td>rA = zero-extend(mem[addr])</td></tr>
+            <tr><td class="opcode">0x11</td><td class="mnemonic">STORE rA, [addr24]</td><td>5B</td><td>mem[addr] = rA[7:0]</td></tr>
+            <tr><td class="opcode">0x15</td><td class="mnemonic">LDRI rA, rB</td><td>2B</td><td>rA = zero-extend(mem[rB])</td></tr>
+            <tr><td class="opcode">0x16</td><td class="mnemonic">STRI rA, rB</td><td>2B</td><td>mem[rB] = rA[7:0]</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Memory (32-bit Word)</td></tr>
+            <tr><td class="opcode">0x25</td><td class="mnemonic">LOAD32 rA, [addr24]<span class="new-tag">NEW</span></td><td>5B</td><td>rA = mem32[addr] (4 bytes LE)</td></tr>
+            <tr><td class="opcode">0x26</td><td class="mnemonic">STORE32 rA, [addr24]<span class="new-tag">NEW</span></td><td>5B</td><td>mem32[addr] = rA (4 bytes LE)</td></tr>
+            <tr><td class="opcode">0x27</td><td class="mnemonic">LDRI32 rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>rA = mem32[rB] (4 bytes LE)</td></tr>
+            <tr><td class="opcode">0x28</td><td class="mnemonic">STRI32 rA, rB<span class="new-tag">NEW</span></td><td>2B</td><td>mem32[rB] = rA (4 bytes LE)</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Immediate &amp; Stack</td></tr>
+            <tr><td class="opcode">0x12</td><td class="mnemonic">DATA rA, imm32</td><td>6B</td><td>rA = 32-bit immediate</td></tr>
+            <tr><td class="opcode">0x13</td><td class="mnemonic">PUSH rA</td><td>2B</td><td>SP -= 4; mem32[SP] = rA</td></tr>
+            <tr><td class="opcode">0x14</td><td class="mnemonic">POP rA</td><td>2B</td><td>rA = mem32[SP]; SP += 4</td></tr>
+
+            <tr><td colspan="4" class="isa-section">Jumps &amp; Calls</td></tr>
+            <tr><td class="opcode">0x18</td><td class="mnemonic">JMP addr24</td><td>4B</td><td>Unconditional jump</td></tr>
+            <tr><td class="opcode">0x19</td><td class="mnemonic">JC addr24</td><td>4B</td><td>Jump if carry</td></tr>
+            <tr><td class="opcode">0x1A</td><td class="mnemonic">JA addr24</td><td>4B</td><td>Jump if A &gt; B</td></tr>
+            <tr><td class="opcode">0x1B</td><td class="mnemonic">JE addr24</td><td>4B</td><td>Jump if equal</td></tr>
+            <tr><td class="opcode">0x23</td><td class="mnemonic">JZ addr24<span class="new-tag">NEW</span></td><td>4B</td><td>Jump if zero flag set</td></tr>
+            <tr><td class="opcode">0x24</td><td class="mnemonic">JNZ addr24<span class="new-tag">NEW</span></td><td>4B</td><td>Jump if zero flag not set</td></tr>
+            <tr><td class="opcode">0x1C</td><td class="mnemonic">JMPR rA</td><td>2B</td><td>Jump to address in rA</td></tr>
+            <tr><td class="opcode">0x1D</td><td class="mnemonic">CALL addr24</td><td>4B</td><td>Push return addr, jump</td></tr>
+            <tr><td class="opcode">0x1E</td><td class="mnemonic">RET</td><td>2B</td><td>Pop return addr, jump back</td></tr>
+
+            <tr><td colspan="4" class="isa-section">I/O</td></tr>
+            <tr><td class="opcode">0x1F</td><td class="mnemonic">OUT rA</td><td>2B</td><td>Output low byte to console</td></tr>
+            <tr><td class="opcode">0x20</td><td class="mnemonic">IN rA</td><td>2B</td><td>Read input into rA</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- DECISIONS SUMMARY -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(16,185,129,0.2);color:var(--green);">✓</div>
+      <h2>Design Decisions — Locked</h2>
+    </div>
+    <div class="card-body">
+      <div class="decisions">
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">LOAD/STORE semantics</span><span class="decision-a">Byte + 32-bit variants</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Signed operations</span><span class="decision-a">IDIV + IMOD added</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Variable shift</span><span class="decision-a">SHRN + SHLN added</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Zero-flag jumps</span><span class="decision-a">JZ + JNZ added</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">RAM size</span><span class="decision-a">4MB (22-bit address space)</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">VRAM location</span><span class="decision-a">Top of memory @ 0x3F0000</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Palette type</span><span class="decision-a">Programmable @ 0x3EF000</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Palette format</span><span class="decision-a">4 bytes (RGBA, word-aligned)</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Palette update</span><span class="decision-a">On vsync (tear-free)</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Default palette</span><span class="decision-a">16 v1.0 + 240 HSV rainbow</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">DD directive</span><span class="decision-a">Yes — 4-byte data embed</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">Samples to port</span><span class="decision-a">Mandelbrot, Fractal Anim, Fractal Zoom, Bouncing Ball</span></div>
+        <div class="decision"><span class="decision-icon">✓</span><span class="decision-q">WASM build</span><span class="decision-a">Source only, rebuild locally</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE PLAN -->
+  <div class="card">
+    <div class="card-header">
+      <div class="icon" style="background:rgba(245,158,11,0.2);color:var(--orange);">P</div>
+      <h2>Implementation Phases</h2>
+    </div>
+    <div class="card-body">
+      <div class="phases">
+        <div class="phase-item">
+          <div class="phase-num active">1</div>
+          <div class="phase-content">
+            <div class="phase-title">Core CPU Architecture</div>
+            <div class="phase-files">
+              <code>core/src/lib.rs</code> — Rust WASM (32-bit regs, 4MB mem, 43 opcodes)<br>
+              <code>web/src/wasm-bridge.ts</code> — JS engine (mirror all changes)<br>
+              <code>web/src/wasm-cpu.ts</code> — WASM wrapper (4MB memory view)
+            </div>
+          </div>
+        </div>
+        <div class="phase-item">
+          <div class="phase-num pending">2</div>
+          <div class="phase-content">
+            <div class="phase-title">Assembler</div>
+            <div class="phase-files">
+              <code>web/src/assembler.ts</code> — New encoding sizes, 24-bit addrs, DD directive
+            </div>
+          </div>
+        </div>
+        <div class="phase-item">
+          <div class="phase-num pending">3</div>
+          <div class="phase-content">
+            <div class="phase-title">UI — Video, Registers, Memory</div>
+            <div class="phase-files">
+              <code>VideoView.tsx</code> — 8bpp renderer + programmable palette<br>
+              <code>CpuView.tsx</code> — 32-bit hex display<br>
+              <code>MemoryView.tsx</code> — 22-bit addresses
+            </div>
+          </div>
+        </div>
+        <div class="phase-item">
+          <div class="phase-num pending">4</div>
+          <div class="phase-content">
+            <div class="phase-title">Sample Programs</div>
+            <div class="phase-files">
+              Mandelbrot 16.16, Fractal Anim, Fractal Zoom (JS), Bouncing Ball
+            </div>
+          </div>
+        </div>
+        <div class="phase-item">
+          <div class="phase-num pending">5</div>
+          <div class="phase-content">
+            <div class="phase-title">Polish</div>
+            <div class="phase-files">
+              <code>REFERENCE.md</code>, <code>README.md</code>, HelpPanel, Electron packaging
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Generate the palette
+const PALETTE = [];
+
+// First 16: v1.0 colors
+const V1_COLORS = [
+  [10,12,20],[25,7,80],[9,1,142],[4,4,200],[0,75,220],[5,140,190],
+  [10,190,120],[40,220,60],[120,230,25],[220,220,15],[255,180,0],
+  [255,100,0],[220,40,5],[170,15,60],[100,5,80],[50,5,50]
+];
+V1_COLORS.forEach(c => PALETTE.push(c));
+
+// 16–255: HSV rainbow gradient (240 colors)
+for (let i = 0; i < 240; i++) {
+  const h = (i / 240) * 360;
+  const s = 0.85;
+  const v = 0.6 + 0.4 * Math.sin(i / 240 * Math.PI); // vary brightness
+  // HSV to RGB
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r, g, b;
+  if (h < 60)       { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else              { r = c; g = 0; b = x; }
+  PALETTE.push([
+    Math.round((r + m) * 255),
+    Math.round((g + m) * 255),
+    Math.round((b + m) * 255)
+  ]);
+}
+
+const container = document.getElementById('palette');
+const tooltip = document.getElementById('palette-tooltip');
+
+PALETTE.forEach((rgb, i) => {
+  const el = document.createElement('div');
+  el.className = 'palette-swatch';
+  el.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  el.addEventListener('mouseenter', () => {
+    const hex = '#' + rgb.map(c => c.toString(16).padStart(2,'0')).join('');
+    const addr = '0x' + (0x3EF000 + i * 4).toString(16).toUpperCase();
+    tooltip.textContent = `Color ${i}: ${hex} — R:${rgb[0]} G:${rgb[1]} B:${rgb[2]} — Palette addr: ${addr}`;
+    tooltip.style.color = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  });
+  el.addEventListener('mouseleave', () => {
+    tooltip.textContent = '';
+  });
+  container.appendChild(el);
+});
+</script>
+
+</body>
+</html>
