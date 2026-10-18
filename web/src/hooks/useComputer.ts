@@ -52,6 +52,8 @@ export interface ComputerHook {
   breakpoints: Set<number>;
   consoleOutput: number[];
   canStepBack: boolean;
+  /** Steps that Step Back can undo (at most HISTORY_SIZE). */
+  undoCount: number;
   waitingForInput: { register: number } | null;
   /** Fault message from the engine, e.g. "Illegal opcode 0x2D at 0x000140". */
   fault: string | null;
@@ -121,7 +123,8 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
   const [isReady, setIsReady] = useState(false);
   const [breakpoints, setBreakpointsState] = useState<Set<number>>(new Set());
   const [consoleOutput, setConsoleOutput] = useState<number[]>([]);
-  const [canStepBack, setCanStepBack] = useState(false);
+  const [undoCount, setUndoCount] = useState(0);
+  const canStepBack = undoCount > 0;
   const [waitingForInput, setWaitingForInput] = useState<{ register: number } | null>(null);
   const [fault, setFault] = useState<string | null>(null);
   const [stopReason, setStopReason] = useState<StopReason>(null);
@@ -191,14 +194,14 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     const c = computerRef.current;
     if (!c) return;
     undo.current.push(c.getSnapshot());
-    setCanStepBack(true);
+    setUndoCount(undo.current.size);
   }, []);
 
   const clearHistory = useCallback(() => {
     undo.current.clear();
     cpuHistory.current.clear();
     setTraceHistory([]);
-    setCanStepBack(false);
+    setUndoCount(0);
     setPrevState(null);
   }, []);
 
@@ -246,7 +249,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
     c.restoreSnapshot(snap);
     cpuHistory.current.pop();
     setTraceHistory(cpuHistory.current.toArray());
-    setCanStepBack(undo.current.size > 0);
+    setUndoCount(undo.current.size);
     setPrevState(null);
     setTrace(null);
     setStopReason(null);
@@ -479,7 +482,7 @@ export function useComputer(initialProgram?: number[]): ComputerHook {
 
   return {
     state, prevState, memory, memoryVersion, trace, traceHistory, isRunning, isReady,
-    breakpoints, consoleOutput, canStepBack, waitingForInput, fault, stopReason,
+    breakpoints, consoleOutput, canStepBack, undoCount, waitingForInput, fault, stopReason,
     engineType, wasmAvailable, engineNote, cyclesPerSec,
     loadProgram, step, stepBack, run, pause, reset, hardReset,
     setSpeed, poke, pokeRaw, refresh, toggleBreakpoint, clearBreakpoints, clearConsole,

@@ -8,7 +8,7 @@
 // ============================================================================
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useComputer, ComputerHook } from '../hooks/useComputer';
+import { useComputer, ComputerHook, HISTORY_SIZE } from '../hooks/useComputer';
 import { shortcutFor } from '../hooks/shortcuts';
 import { loadEdits, saveEdits, clearEdits, loadActiveSample, saveActiveSample } from '../hooks/editorStorage';
 import CpuView from './CpuView';
@@ -603,7 +603,7 @@ export default function App() {
             Expected: {sample.expect}
           </span>
         )}
-        <span title="Undo history (Step Back)">History <span style={{ color: 'var(--text-secondary)' }}>{computer.traceHistory.length}/64</span></span>
+        <span title="Steps that Step Back can undo">Undo <span style={{ color: 'var(--text-secondary)' }}>{computer.undoCount}/{HISTORY_SIZE}</span></span>
         <button onClick={() => setShowAbout(true)} aria-label="About GateStack" title="About GateStack" style={statusBtn}>i</button>
         <button onClick={() => setShowHelp(true)} aria-label="Help and ISA reference" title="Help & ISA Reference (?)" style={statusBtn}>?</button>
       </footer>
