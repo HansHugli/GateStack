@@ -4,13 +4,13 @@
 // Exposes memory as a shared buffer so TypeScript can read video RAM directly.
 // The `run()` method is the hot path — no allocations, pure computation.
 //
+// The JavaScript engine (web/src/wasm-bridge.ts, MockComputer) implements the
+// same machine; web/src/engines.test.ts runs both in lockstep. Change both.
+//
 // Build:
-//   cd core
-//   wasm-pack build --target web --out-dir ../web/src/wasm
+//   cd web && npm run build:wasm     (wasm-pack, --target bundler)
 //
 // Usage in TypeScript:
-//   import init, { WasmCpu } from './wasm/gatestack_core';
-//   await init();
 //   const cpu = new WasmCpu();
 //   cpu.load_program(bytes);
 //   cpu.run(1_000_000);
@@ -21,6 +21,9 @@ use wasm_bindgen::prelude::*;
 
 const MEM_SIZE: usize = 4_194_304; // 4MB
 const MEM_MASK: usize = 0x3FFFFF;  // 22-bit address mask
+const ADDR_MASK: u32 = 0x3FFFFF;   // the same mask, for IAR and SP
+/// Highest address a 32-bit access may start at (its 4 bytes end at 0x3FFFFF).
+const LAST_WORD_ADDR: usize = MEM_SIZE - 4;
 
 // Memory map
 const PALETTE_BASE: u32 = 0x3E0000;
@@ -77,6 +80,9 @@ const STRI32:  u8 = 0x28;
 const IDIV:    u8 = 0x29;
 const IMOD:    u8 = 0x2A;
 const FPMUL:   u8 = 0x2B;  // Signed 8.8 fixed-point multiply
+const FPMUL16: u8 = 0x2C;  // Signed 16.16 fixed-point multiply
+/// Every opcode above this one is undefined and faults.
+const LAST_OPCODE: u8 = FPMUL16;
 
 #[wasm_bindgen]
 pub struct WasmCpu {
@@ -84,7 +90,7 @@ pub struct WasmCpu {
     r: [u32; 16],
     iar: u32,
     sp: u32,
-    cycle_count: u32,
+    cycle_count: u64,
     // Flags
     carry: bool,
     a_larger: bool,
@@ -94,17 +100,24 @@ pub struct WasmCpu {
     halted: bool,
     input_waiting: bool,
     input_register: u8,
+    /// Why the CPU stopped on a fault ("" when it did not).
+    fault: String,
     // Console output buffer (read and cleared by JS)
     console_buf: Vec<u8>,
     // Breakpoints (up to 64)
     breakpoints: Vec<u32>,
     num_breakpoints: usize,
+    /// The breakpoint the last run() stopped at. The next run() starting there
+    /// executes it once instead of stopping again.
+    bp_resume: Option<u32>,
     // When true, STORE to VSYNC_ADDR does not break execution
     skip_vsync: bool,
 }
 
 // ── Default 256-color palette ──────────────────────────────────────────────
-// First 16: v1.0 compatible, remaining 240: HSV rainbow gradient
+// First 16: v1.0 compatible, remaining 240: HSV rainbow gradient.
+// Rounded exactly like the JS engine (Math.round): no channel lies near .5,
+// so both engines produce the same 1024 bytes (checked by engines.test.ts).
 fn build_default_palette() -> [u8; 1024] {
     let mut pal = [0u8; 1024];
 
@@ -139,13 +152,21 @@ fn build_default_palette() -> [u8; 1024] {
             else               { (c, 0.0, x) };
 
         let idx = (16 + i as usize) * 4;
-        pal[idx]     = ((r1 + m) * 255.0) as u8;
-        pal[idx + 1] = ((g1 + m) * 255.0) as u8;
-        pal[idx + 2] = ((b1 + m) * 255.0) as u8;
+        pal[idx]     = ((r1 + m) * 255.0).round() as u8;
+        pal[idx + 1] = ((g1 + m) * 255.0).round() as u8;
+        pal[idx + 2] = ((b1 + m) * 255.0).round() as u8;
         pal[idx + 3] = 0;
     }
 
     pal
+}
+
+fn illegal_opcode_message(opcode: u8, addr: usize) -> String {
+    format!("Illegal opcode 0x{:02X} at 0x{:06X}", opcode, addr)
+}
+
+fn word_past_end_message(addr: usize) -> String {
+    format!("32-bit access at 0x{:06X} runs past the end of RAM (0x3FFFFF)", addr)
 }
 
 #[wasm_bindgen]
@@ -171,9 +192,11 @@ impl WasmCpu {
             halted: false,
             input_waiting: false,
             input_register: 0,
+            fault: String::new(),
             console_buf: Vec::with_capacity(256),
             breakpoints: Vec::with_capacity(64),
             num_breakpoints: 0,
+            bp_resume: None,
             skip_vsync: false,
         }
     }
@@ -192,11 +215,16 @@ impl WasmCpu {
         MEM_SIZE
     }
 
-    /// Load a program into memory at address 0
+    /// Load a program into memory at address 0. Clears a fault and the halt
+    /// state; the rest of the CPU state is kept (call hard_reset() first for a
+    /// clean machine, as the JS wrapper does).
     #[wasm_bindgen]
     pub fn load_program(&mut self, program: &[u8]) {
         let len = program.len().min(MEM_SIZE);
         self.mem[..len].copy_from_slice(&program[..len]);
+        self.fault.clear();
+        self.halted = false;
+        self.bp_resume = None;
     }
 
     /// Write a single byte to memory
@@ -219,8 +247,10 @@ impl WasmCpu {
     #[wasm_bindgen]
     pub fn get_sp(&self) -> u32 { self.sp }
 
+    /// Instructions executed since reset. A u64 internally, handed to JS as a
+    /// number (exact up to 2^53), so it never wraps at 2^32.
     #[wasm_bindgen]
-    pub fn get_cycle_count(&self) -> u32 { self.cycle_count }
+    pub fn get_cycle_count(&self) -> f64 { self.cycle_count as f64 }
 
     #[wasm_bindgen]
     pub fn is_halted(&self) -> bool { self.halted }
@@ -230,6 +260,10 @@ impl WasmCpu {
 
     #[wasm_bindgen]
     pub fn get_input_register(&self) -> u8 { self.input_register }
+
+    /// The fault that halted the CPU, or "" when there is none.
+    #[wasm_bindgen]
+    pub fn get_fault(&self) -> String { self.fault.clone() }
 
     #[wasm_bindgen]
     pub fn get_register(&self, i: u8) -> u32 {
@@ -245,6 +279,13 @@ impl WasmCpu {
     #[wasm_bindgen]
     pub fn get_zero(&self) -> bool { self.zero }
 
+    /// The breakpoint address the next run() will execute instead of stopping
+    /// at, or -1 when there is none (kept in snapshots).
+    #[wasm_bindgen]
+    pub fn get_breakpoint_resume(&self) -> i32 {
+        match self.bp_resume { Some(a) => a as i32, None => -1 }
+    }
+
     // ── State setters (for snapshot restore) ────────────────────────────
 
     #[wasm_bindgen]
@@ -253,13 +294,16 @@ impl WasmCpu {
     }
 
     #[wasm_bindgen]
-    pub fn set_iar(&mut self, val: u32) { self.iar = val; }
+    pub fn set_iar(&mut self, val: u32) { self.iar = val & ADDR_MASK; }
 
     #[wasm_bindgen]
-    pub fn set_sp(&mut self, val: u32) { self.sp = val; }
+    pub fn set_sp(&mut self, val: u32) { self.sp = val & ADDR_MASK; }
 
     #[wasm_bindgen]
-    pub fn set_cycle_count(&mut self, val: u32) { self.cycle_count = val; }
+    pub fn set_cycle_count(&mut self, val: f64) {
+        // `as` saturates: negative and NaN give 0
+        self.cycle_count = val as u64;
+    }
 
     #[wasm_bindgen]
     pub fn set_halted(&mut self, val: bool) { self.halted = val; }
@@ -272,6 +316,23 @@ impl WasmCpu {
         self.zero = zero;
     }
 
+    /// Restore a pending IN (the IAR must point at the IN instruction).
+    #[wasm_bindgen]
+    pub fn set_input_state(&mut self, waiting: bool, register: u8) {
+        self.input_waiting = waiting;
+        self.input_register = register & 0x0F;
+    }
+
+    /// Restore a fault ("" clears it). It does not change the halt state.
+    #[wasm_bindgen]
+    pub fn set_fault(&mut self, fault: String) { self.fault = fault; }
+
+    /// Restore the breakpoint-resume address (-1 for none).
+    #[wasm_bindgen]
+    pub fn set_breakpoint_resume(&mut self, addr: i32) {
+        self.bp_resume = if addr < 0 { None } else { Some((addr as u32) & ADDR_MASK) };
+    }
+
     /// Provide input value (resume from IN instruction)
     #[wasm_bindgen]
     pub fn provide_input(&mut self, value: u32) {
@@ -279,7 +340,7 @@ impl WasmCpu {
             self.r[self.input_register as usize] = value;
             self.input_waiting = false;
             // Advance past the IN instruction (2 bytes)
-            self.iar = self.iar.wrapping_add(2);
+            self.iar = self.iar.wrapping_add(2) & ADDR_MASK;
             self.cycle_count += 1;
         }
     }
@@ -340,6 +401,9 @@ impl WasmCpu {
         self.zero = true;
         self.halted = false;
         self.input_waiting = false;
+        self.input_register = 0;
+        self.fault.clear();
+        self.bp_resume = None;
         self.console_buf.clear();
     }
 
@@ -356,31 +420,40 @@ impl WasmCpu {
     // ── Execution — the hot path (unsafe-optimized) ──────────────────────
 
     /// Execute up to max_cycles instructions. Returns number actually executed.
-    /// Stops on: HALT, breakpoint, vsync (STORE to VSYNC_ADDR), or IN.
+    /// Stops on: HALT, a fault, a breakpoint (also on the first instruction;
+    /// the next run() then executes it), vsync (after the flipping STORE), or IN.
     ///
     /// SAFETY: Uses unsafe pointer access to skip bounds checks.
-    /// All memory accesses are masked to MEM_MASK (22-bit).
+    /// All memory accesses are masked to MEM_MASK (22-bit); 32-bit accesses
+    /// past LAST_WORD_ADDR fault before touching memory.
     /// All register accesses use (x & 0x0F) indices into a 16-element array.
     #[wasm_bindgen]
     pub fn run(&mut self, max_cycles: u32) -> u32 {
         let mem = self.mem.as_mut_ptr();
         let r = self.r.as_mut_ptr();
 
-        let mut iar = self.iar;
-        let mut sp = self.sp;
+        let mut iar = self.iar & ADDR_MASK;
+        let mut sp = self.sp & ADDR_MASK;
         let mut f_carry = self.carry;
         let mut f_a_larger = self.a_larger;
         let mut f_equal = self.equal;
         let mut f_zero = self.zero;
         let mut executed: u32 = 0;
         let mut console_out: Vec<u8> = Vec::new();
+        let mut fault: Option<String> = None;
 
         let has_bp = self.num_breakpoints > 0;
+        let mut skip_bp = self.bp_resume == Some(iar);
+        self.bp_resume = None;
 
         unsafe {
         for _ in 0..max_cycles {
             if self.halted || self.input_waiting { break; }
-            if executed > 0 && has_bp && self.breakpoints.contains(&iar) { break; }
+            if has_bp && !skip_bp && self.breakpoints.contains(&iar) {
+                self.bp_resume = Some(iar);
+                break;
+            }
+            skip_bp = false;
 
             let addr = (iar as usize) & MEM_MASK;
             let opcode = *mem.add(addr);
@@ -394,6 +467,12 @@ impl WasmCpu {
                 break;
             }
 
+            // Undefined opcode: fault, IAR stays on it
+            if opcode > LAST_OPCODE {
+                fault = Some(illegal_opcode_message(opcode, addr));
+                break;
+            }
+
             // Instruction size (v2.0 encoding)
             let size: u32 = match opcode {
                 DATA => 6,                                                       // opcode + reg + imm32
@@ -401,7 +480,7 @@ impl WasmCpu {
                 JMP | JC | JA | JE | JZ | JNZ | CALL => 4,                     // opcode + addr24
                 _ => 2,                                                          // opcode + reg byte
             };
-            iar = iar.wrapping_add(size);
+            iar = iar.wrapping_add(size) & ADDR_MASK;
 
             // ── Helper: read 24-bit LE address from memory ──
             macro_rules! read_addr24_at {
@@ -412,11 +491,39 @@ impl WasmCpu {
                 }
             }
 
-            // ── ALU (0x01-0x0F, 0x17, 0x21, 0x22, 0x29, 0x2A) ──
+            // ── Helper: a 32-bit access at `$m` (masked) must fit in RAM ──
+            macro_rules! check_word {
+                ($m:expr) => {
+                    if $m > LAST_WORD_ADDR {
+                        fault = Some(word_past_end_message($m));
+                        iar = addr as u32;
+                        break;
+                    }
+                }
+            }
+
+            // ── Helper: vsync — page flip, count the STORE, yield ──
+            macro_rules! vsync {
+                () => {
+                    if !self.skip_vsync {
+                        // Page flip: copy back buffer → front buffer (64KB)
+                        std::ptr::copy_nonoverlapping(
+                            mem.add(BACK_BUFFER as usize),
+                            mem.add(FRONT_BUFFER as usize),
+                            0x10000,
+                        );
+                        self.cycle_count += 1;
+                        executed += 1;
+                        break;
+                    }
+                }
+            }
+
+            // ── ALU (0x01-0x0F, 0x17, 0x21, 0x22, 0x29-0x2C) ──
             if (opcode >= ADD && opcode <= SHR8) || opcode == SHL8
                 || opcode == SHRN || opcode == SHLN
                 || opcode == IDIV || opcode == IMOD
-                || opcode == FPMUL {
+                || opcode == FPMUL || opcode == FPMUL16 {
                 let a = *r.add(ra);
                 let b = *r.add(rb);
                 let mut result: u32 = 0;
@@ -441,10 +548,13 @@ impl WasmCpu {
                     }
                     FPMUL => {
                         // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
-                        let sa = a as i32 as i64;
-                        let sb = b as i32 as i64;
-                        let prod = sa * sb;
-                        result = ((prod >> 8) & 0xFFFF_FFFF) as u32;
+                        let prod = (a as i32 as i64) * (b as i32 as i64);
+                        result = (prod >> 8) as u32;
+                    }
+                    FPMUL16 => {
+                        // Signed 16.16 fixed-point multiply: rA = (rA * rB) >> 16
+                        let prod = (a as i32 as i64) * (b as i32 as i64);
+                        result = (prod >> 16) as u32;
                     }
                     SHR  => { result = a >> 1; carry = (a & 1) != 0; }
                     SHL  => { let s = (a as u64) << 1; result = s as u32; carry = s > 0xFFFF_FFFF; }
@@ -452,10 +562,12 @@ impl WasmCpu {
                     AND  => { result = a & b; }
                     OR   => { result = a | b; }
                     XOR  => { result = a ^ b; }
-                    CMP  => { result = a; }
+                    // Flags as for rA − rB; nothing is stored
+                    CMP  => { result = a.wrapping_sub(b); carry = a < b; }
                     MOV  => { result = b; }
                     SHR8 => { result = a >> 8; carry = (a & 0x80) != 0; }
-                    SHL8 => { result = a << 8; carry = (a & 0x0080_0000) != 0; }
+                    // Carry = any of the 8 bits shifted out
+                    SHL8 => { result = a << 8; carry = (a >> 24) != 0; }
                     SHRN => { let shift = b & 31; result = a >> shift; carry = if shift > 0 { (a >> (shift - 1)) & 1 != 0 } else { false }; }
                     SHLN => { let shift = b & 31; let s = (a as u64) << shift; result = s as u32; carry = s > 0xFFFF_FFFF; }
                     _    => {}
@@ -479,52 +591,29 @@ impl WasmCpu {
 
             // ── STORE rA, [addr24] — store low byte ──
             else if opcode == STORE {
-                let m_addr = read_addr24_at!(addr + 2);
-                let masked = (m_addr as usize) & MEM_MASK;
-                *mem.add(masked) = (*r.add(ra) & 0xFF) as u8;
-                if m_addr == VSYNC_ADDR && executed > 0 && !self.skip_vsync {
-                    // Page flip: copy back buffer → front buffer (64KB)
-                    std::ptr::copy_nonoverlapping(
-                        mem.add(BACK_BUFFER as usize),
-                        mem.add(FRONT_BUFFER as usize),
-                        0x10000,
-                    );
-                    self.cycle_count += 1;
-                    executed += 1;
-                    break;
-                }
+                let m = (read_addr24_at!(addr + 2) as usize) & MEM_MASK;
+                *mem.add(m) = (*r.add(ra) & 0xFF) as u8;
+                if m == VSYNC_ADDR as usize { vsync!(); }
             }
 
             // ── LOAD32 rA, [addr24] — load 4 bytes LE ──
             else if opcode == LOAD32 {
-                let m_addr = read_addr24_at!(addr + 2) as usize;
-                *r.add(ra) = *mem.add(m_addr & MEM_MASK) as u32
-                           | ((*mem.add((m_addr + 1) & MEM_MASK) as u32) << 8)
-                           | ((*mem.add((m_addr + 2) & MEM_MASK) as u32) << 16)
-                           | ((*mem.add((m_addr + 3) & MEM_MASK) as u32) << 24);
+                let m = (read_addr24_at!(addr + 2) as usize) & MEM_MASK;
+                check_word!(m);
+                *r.add(ra) = u32::from_le_bytes([*mem.add(m), *mem.add(m + 1), *mem.add(m + 2), *mem.add(m + 3)]);
             }
 
             // ── STORE32 rA, [addr24] — store 4 bytes LE ──
             else if opcode == STORE32 {
-                let m_addr = read_addr24_at!(addr + 2) as usize;
-                let val = *r.add(ra);
-                *mem.add(m_addr & MEM_MASK) = (val & 0xFF) as u8;
-                *mem.add((m_addr + 1) & MEM_MASK) = ((val >> 8) & 0xFF) as u8;
-                *mem.add((m_addr + 2) & MEM_MASK) = ((val >> 16) & 0xFF) as u8;
-                *mem.add((m_addr + 3) & MEM_MASK) = ((val >> 24) & 0xFF) as u8;
-                // Check if any byte hits vsync
-                let m32 = m_addr as u32;
-                if m32 <= VSYNC_ADDR && m32 + 3 >= VSYNC_ADDR
-                   && executed > 0 && !self.skip_vsync {
-                    std::ptr::copy_nonoverlapping(
-                        mem.add(BACK_BUFFER as usize),
-                        mem.add(FRONT_BUFFER as usize),
-                        0x10000,
-                    );
-                    self.cycle_count += 1;
-                    executed += 1;
-                    break;
-                }
+                let m = (read_addr24_at!(addr + 2) as usize) & MEM_MASK;
+                check_word!(m);
+                let b = (*r.add(ra)).to_le_bytes();
+                *mem.add(m) = b[0];
+                *mem.add(m + 1) = b[1];
+                *mem.add(m + 2) = b[2];
+                *mem.add(m + 3) = b[3];
+                // The only word that covers 0x3FFFFF starts at 0x3FFFFC
+                if m == LAST_WORD_ADDR { vsync!(); }
             }
 
             // ── DATA rA, imm32 — 6-byte instruction ──
@@ -542,58 +631,35 @@ impl WasmCpu {
 
             // ── STRI rA, rB — store low byte to [rB] ──
             else if opcode == STRI {
-                let m_addr = *r.add(rb);
-                let masked = (m_addr as usize) & MEM_MASK;
-                *mem.add(masked) = (*r.add(ra) & 0xFF) as u8;
-                if m_addr == VSYNC_ADDR && executed > 0 && !self.skip_vsync {
-                    std::ptr::copy_nonoverlapping(
-                        mem.add(BACK_BUFFER as usize),
-                        mem.add(FRONT_BUFFER as usize),
-                        0x10000,
-                    );
-                    self.cycle_count += 1;
-                    executed += 1;
-                    break;
-                }
+                let m = (*r.add(rb) as usize) & MEM_MASK;
+                *mem.add(m) = (*r.add(ra) & 0xFF) as u8;
+                if m == VSYNC_ADDR as usize { vsync!(); }
             }
 
             // ── LDRI32 rA, rB — load 32-bit word from [rB] ──
             else if opcode == LDRI32 {
-                let m_addr = (*r.add(rb) as usize) & MEM_MASK;
-                *r.add(ra) = *mem.add(m_addr) as u32
-                           | ((*mem.add((m_addr + 1) & MEM_MASK) as u32) << 8)
-                           | ((*mem.add((m_addr + 2) & MEM_MASK) as u32) << 16)
-                           | ((*mem.add((m_addr + 3) & MEM_MASK) as u32) << 24);
+                let m = (*r.add(rb) as usize) & MEM_MASK;
+                check_word!(m);
+                *r.add(ra) = u32::from_le_bytes([*mem.add(m), *mem.add(m + 1), *mem.add(m + 2), *mem.add(m + 3)]);
             }
 
             // ── STRI32 rA, rB — store 32-bit word to [rB] ──
             else if opcode == STRI32 {
-                let m_addr = *r.add(rb);
-                let masked = (m_addr as usize) & MEM_MASK;
-                let val = *r.add(ra);
-                *mem.add(masked) = (val & 0xFF) as u8;
-                *mem.add((masked + 1) & MEM_MASK) = ((val >> 8) & 0xFF) as u8;
-                *mem.add((masked + 2) & MEM_MASK) = ((val >> 16) & 0xFF) as u8;
-                *mem.add((masked + 3) & MEM_MASK) = ((val >> 24) & 0xFF) as u8;
-                // Check vsync
-                if m_addr <= VSYNC_ADDR && m_addr + 3 >= VSYNC_ADDR
-                   && executed > 0 && !self.skip_vsync {
-                    std::ptr::copy_nonoverlapping(
-                        mem.add(BACK_BUFFER as usize),
-                        mem.add(FRONT_BUFFER as usize),
-                        0x10000,
-                    );
-                    self.cycle_count += 1;
-                    executed += 1;
-                    break;
-                }
+                let m = (*r.add(rb) as usize) & MEM_MASK;
+                check_word!(m);
+                let b = (*r.add(ra)).to_le_bytes();
+                *mem.add(m) = b[0];
+                *mem.add(m + 1) = b[1];
+                *mem.add(m + 2) = b[2];
+                *mem.add(m + 3) = b[3];
+                if m == LAST_WORD_ADDR { vsync!(); }
             }
 
             // ── PUSH rA — push 32-bit value (SP -= 4) ──
             else if opcode == PUSH {
                 let val = *r.add(ra);
-                sp = sp.wrapping_sub(4);
-                let base = (sp as usize) & MEM_MASK;
+                sp = sp.wrapping_sub(4) & ADDR_MASK;
+                let base = sp as usize;
                 *mem.add(base) = (val & 0xFF) as u8;
                 *mem.add((base + 1) & MEM_MASK) = ((val >> 8) & 0xFF) as u8;
                 *mem.add((base + 2) & MEM_MASK) = ((val >> 16) & 0xFF) as u8;
@@ -602,60 +668,60 @@ impl WasmCpu {
 
             // ── POP rA — pop 32-bit value (SP += 4) ──
             else if opcode == POP {
-                let base = (sp as usize) & MEM_MASK;
+                let base = sp as usize;
                 *r.add(ra) = *mem.add(base) as u32
                            | ((*mem.add((base + 1) & MEM_MASK) as u32) << 8)
                            | ((*mem.add((base + 2) & MEM_MASK) as u32) << 16)
                            | ((*mem.add((base + 3) & MEM_MASK) as u32) << 24);
-                sp = sp.wrapping_add(4);
+                sp = sp.wrapping_add(4) & ADDR_MASK;
             }
 
             // ── JMP addr24 ──
             else if opcode == JMP {
-                iar = read_addr24_at!(addr + 1);
+                iar = read_addr24_at!(addr + 1) & ADDR_MASK;
             }
 
             // ── JC addr24 ──
             else if opcode == JC {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 if f_carry { iar = target; }
             }
 
             // ── JA addr24 ──
             else if opcode == JA {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 if f_a_larger { iar = target; }
             }
 
             // ── JE addr24 ──
             else if opcode == JE {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 if f_equal { iar = target; }
             }
 
             // ── JZ addr24 ──
             else if opcode == JZ {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 if f_zero { iar = target; }
             }
 
             // ── JNZ addr24 ──
             else if opcode == JNZ {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 if !f_zero { iar = target; }
             }
 
             // ── JMPR rA ──
             else if opcode == JMPR {
-                iar = *r.add(ra);
+                iar = *r.add(ra) & ADDR_MASK;
             }
 
             // ── CALL addr24 ──
             else if opcode == CALL {
-                let target = read_addr24_at!(addr + 1);
+                let target = read_addr24_at!(addr + 1) & ADDR_MASK;
                 let ret_addr = iar;
-                sp = sp.wrapping_sub(4);
-                let base = (sp as usize) & MEM_MASK;
+                sp = sp.wrapping_sub(4) & ADDR_MASK;
+                let base = sp as usize;
                 *mem.add(base) = (ret_addr & 0xFF) as u8;
                 *mem.add((base + 1) & MEM_MASK) = ((ret_addr >> 8) & 0xFF) as u8;
                 *mem.add((base + 2) & MEM_MASK) = ((ret_addr >> 16) & 0xFF) as u8;
@@ -665,12 +731,12 @@ impl WasmCpu {
 
             // ── RET ──
             else if opcode == RET {
-                let base = (sp as usize) & MEM_MASK;
-                iar = *mem.add(base) as u32
+                let base = sp as usize;
+                iar = (*mem.add(base) as u32
                     | ((*mem.add((base + 1) & MEM_MASK) as u32) << 8)
                     | ((*mem.add((base + 2) & MEM_MASK) as u32) << 16)
-                    | ((*mem.add((base + 3) & MEM_MASK) as u32) << 24);
-                sp = sp.wrapping_add(4);
+                    | ((*mem.add((base + 3) & MEM_MASK) as u32) << 24)) & ADDR_MASK;
+                sp = sp.wrapping_add(4) & ADDR_MASK;
             }
 
             // ── OUT rA ──
@@ -682,7 +748,7 @@ impl WasmCpu {
             else if opcode == IN {
                 self.input_waiting = true;
                 self.input_register = ra as u8;
-                iar = iar.wrapping_sub(size); // rewind
+                iar = addr as u32; // rewind: provide_input() moves past it
                 break;
             }
 
@@ -699,19 +765,28 @@ impl WasmCpu {
         self.equal = f_equal;
         self.zero = f_zero;
         self.console_buf.extend_from_slice(&console_out);
+        if let Some(f) = fault {
+            self.fault = f;
+            self.halted = true;
+        }
 
         executed
     }
 
-    /// Execute a single instruction (for step mode).
-    /// Returns the opcode that was executed (0 if halted/waiting).
+    /// Execute a single instruction (for step mode), even when a breakpoint
+    /// sits on it. Returns the opcode at the IAR (0 if halted/waiting).
     #[wasm_bindgen]
     pub fn step(&mut self) -> u8 {
         if self.halted || self.input_waiting { return 0; }
         let opcode = self.mem[(self.iar as usize) & MEM_MASK];
+        self.bp_resume = Some(self.iar & ADDR_MASK); // a single step always executes
         self.run(1);
         opcode
     }
+}
+
+impl Default for WasmCpu {
+    fn default() -> Self { Self::new() }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

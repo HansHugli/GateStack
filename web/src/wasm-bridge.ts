@@ -6,16 +6,23 @@
 //   - instrSize() — instruction length lookup
 //   - IComputer interface — the contract both JS and WASM engines implement
 //   - CpuState, CycleTrace, MicroStep — shared state types
+//   - buildStepTrace() — the step() trace both engines return
 //   - MockComputer — pure JavaScript CPU implementation (default engine)
 //   - createComputer() — factory that tries WASM first, falls back to JS
 //   - getOpcodeName() — opcode → mnemonic lookup
 //
+// MockComputer and the Rust core (core/src/lib.rs) implement the same machine;
+// src/engines.test.ts runs both in lockstep. Change both together.
+//
 // v2.0 changes from v1.0:
 //   - 32-bit registers (u32), 4MB RAM, 22-bit address space
 //   - 24-bit addresses in instructions, 32-bit immediates in DATA
-//   - New opcodes: SHRN, SHLN, JZ, JNZ, LOAD32, STORE32, LDRI32, STRI32, IDIV, IMOD
+//   - New opcodes: SHRN, SHLN, JZ, JNZ, LOAD32, STORE32, LDRI32, STRI32, IDIV, IMOD,
+//     FPMUL (8.8), FPMUL16 (16.16)
 //   - Programmable palette at 0x3E0000 (256 × 4 bytes), updated on vsync
 //   - Instruction sizes: DATA=6, LOAD/STORE/LOAD32/STORE32=5, jumps=4, rest=2
+//   - Faults: an undefined opcode, or a 32-bit access running past 0x3FFFFF,
+//     halts the CPU with a message (getFault()).
 // ============================================================================
 
 // ── Opcodes (must match core/src/lib.rs exactly) ─────────────────────────
@@ -66,7 +73,11 @@ export const OP = {
   IDIV:    0x29,
   IMOD:    0x2A,
   FPMUL:   0x2B,  // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
+  FPMUL16: 0x2C,
 } as const;
+
+/** Every opcode above this one is undefined and faults. */
+const LAST_OPCODE = OP.FPMUL16;
 
 // ── Instruction size lookup ──────────────────────────────────────────────
 
@@ -77,7 +88,7 @@ export function instrSize(opcode: number): number {
     case OP.LOAD32: case OP.STORE32:                           return 5; // opcode + reg + addr24
     case OP.JMP: case OP.JC: case OP.JA: case OP.JE:          return 4; // opcode + addr24
     case OP.JZ: case OP.JNZ: case OP.CALL:                    return 4;
-    default:                                                   return 2; // opcode + reg byte
+    default:                                                   return 2; // opcode + reg byte (FPMUL16 too)
   }
 }
 
@@ -92,16 +103,37 @@ export function getOpcodeName(opcode: number): string {
   return OP_NAME_MAP[opcode] ?? '???';
 }
 
+/** True for the opcodes that go through the ALU (and show ALU micro-steps). */
+export function isAluOpcode(opcode: number): boolean {
+  return (opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
+      || opcode === OP.SHRN || opcode === OP.SHLN
+      || opcode === OP.IDIV || opcode === OP.IMOD
+      || opcode === OP.FPMUL || opcode === OP.FPMUL16;
+}
+
 // ── Memory map constants ─────────────────────────────────────────────────
 
 const MEM_SIZE    = 4_194_304;  // 4MB
 const MEM_MASK    = 0x3FFFFF;   // 22-bit address mask
+const LAST_WORD_ADDR = MEM_SIZE - 4; // highest start of a 32-bit access (0x3FFFFC)
 const PALETTE_BASE = 0x3E0000;  // 256 × 4 bytes = 1024 bytes
 const BACK_BUFFER  = 0x3C0000;  // Back buffer (draw target) 64KB
 const FRONT_BUFFER = 0x3D0000;  // Front buffer (display) 64KB
 const VIDEO_BASE   = 0x3D0000;  // Alias for front buffer
 const VSYNC_ADDR   = 0x3FFFFF;  // triggers page flip
 const INIT_SP      = 0x3BFFFF;  // top of program/data/stack (below back buffer)
+
+// ── Fault messages (identical in core/src/lib.rs) ────────────────────────
+
+const hex = (n: number, digits: number) => (n >>> 0).toString(16).toUpperCase().padStart(digits, '0');
+
+export function illegalOpcodeMessage(opcode: number, addr: number): string {
+  return `Illegal opcode 0x${hex(opcode, 2)} at 0x${hex(addr, 6)}`;
+}
+
+export function wordPastEndMessage(addr: number): string {
+  return `32-bit access at 0x${hex(addr, 6)} runs past the end of RAM (0x3FFFFF)`;
+}
 
 // ── Shared types ─────────────────────────────────────────────────────────
 
@@ -116,13 +148,13 @@ export interface CpuState {
   r: number[];          // 16 × 32-bit registers
   acc: number;          // not used in v2 but kept for UI compatibility
   tmp: number;          // not used in v2 but kept for UI compatibility
-  iar: number;          // 32-bit instruction address register
+  iar: number;          // 22-bit instruction address register
   ir: number;           // 8-bit current opcode
-  sp: number;           // 32-bit stack pointer
+  sp: number;           // 22-bit stack pointer
   flags: CpuFlags;
   bus: number;          // not used in v2 but kept for UI compatibility
   halted: boolean;
-  cycle_count: number;
+  cycle_count: number;  // never wraps at 2^32 (exact up to 2^53)
 }
 
 export type MicroStep = {
@@ -162,7 +194,7 @@ export interface CycleTrace {
   flags: CpuFlags | null;
   cycle: number;
   halted: boolean;
-  error: string | null;
+  error: string | null;   // the fault message when this step faulted
 }
 
 export type EngineType = 'js' | 'wasm';
@@ -173,13 +205,26 @@ export interface Snapshot {
   state: CpuState;
   memory: Uint8Array;   // Efficient binary copy (not number[])
   console: number[];
+  // Added 2026-10: optional so older snapshots still restore (defaults: not
+  // waiting, no fault, no pending breakpoint resume).
+  inputWaiting?: boolean;
+  inputRegister?: number;
+  fault?: string | null;
+  /** Breakpoint address the next run() executes instead of stopping at. */
+  breakpointResume?: number | null;
 }
 
 // ── IComputer interface ──────────────────────────────────────────────────
 
 export interface IComputer {
   loadProgram(bytes: Uint8Array): void;
+  /** Executes exactly one instruction, even when a breakpoint sits on it. */
   step(): CycleTrace;
+  /**
+   * Executes up to maxCycles instructions. Stops on HALT, a fault, IN, a
+   * breakpoint (including one on the first instruction: the next run() then
+   * executes it), or after a vsync STORE.
+   */
   run(maxCycles: number): number;
 
   getState(): CpuState;
@@ -199,6 +244,9 @@ export interface IComputer {
   getInputRequest(): { register: number } | null;
   provideInput(value: number): void;
 
+  /** The fault that halted the CPU (e.g. "Illegal opcode 0x2D at 0x000140"), or null. */
+  getFault(): string | null;
+
   getPc(): number;
   getCycleCount(): number;
   getRegister(index: number): number;
@@ -213,13 +261,18 @@ export interface IComputer {
   restoreSnapshot(snap: Snapshot): void;
 
   setSkipVsync(skip: boolean): void;
+
+  /** Releases the engine's resources (WASM: frees the CPU). Don't use it afterwards. */
+  dispose(): void;
 }
 
 // ── Default 256-color palette ────────────────────────────────────────────
 // First 16: v1.0 compatible, remaining 240: HSV rainbow gradient
 // Stored as flat array: [R0,G0,B0,_,R1,G1,B1,_,...] (1024 bytes)
+// Rounded with Math.round, like core/src/lib.rs (.round()); no channel lies
+// near .5, so both engines produce the same bytes (engines.test.ts checks).
 
-function buildDefaultPalette(): number[] {
+export function buildDefaultPalette(): number[] {
   const pal = new Array(1024).fill(0);
 
   // v1.0 colors (16 entries)
@@ -260,14 +313,163 @@ function buildDefaultPalette(): number[] {
   return pal;
 }
 
+// ── step() trace (shared by both engines) ────────────────────────────────
+
+/** What buildStepTrace needs to know about the CPU after the instruction ran. */
+export interface TraceProbe {
+  readAddr24(offset: number): number;
+  getRegister(index: number): number;
+  getSp(): number;
+  getPc(): number;
+  getFlags(): CpuFlags;
+  getCycleCount(): number;
+  isHalted(): boolean;
+}
+
+/**
+ * Builds the micro-step trace of one executed instruction. `addr`, `opcode`,
+ * `rA`, `rB`, `preA` and `preB` are read before it ran; `probe` reads the CPU
+ * after. `fault` is set when the instruction faulted (it did not execute).
+ */
+export function buildStepTrace(
+  addr: number, opcode: number, rA: number, rB: number, preA: number, preB: number,
+  probe: TraceProbe, fault: string | null,
+): CycleTrace {
+  const opName = getOpcodeName(opcode);
+  const steps: MicroStep[] = [
+    { FetchInstruction: { address: addr, value: opcode } },
+    // Fetch cycle: IAR → MAR → RAM → IR
+    { BusTransfer: { source: 'IAR', dest: 'MAR', value: addr } },
+    { BusTransfer: { source: 'RAM', dest: 'IR', value: opcode } },
+  ];
+
+  const postA = probe.getRegister(rA) >>> 0;
+  const flags = probe.getFlags();
+  const sp = probe.getSp();
+
+  if (fault) {
+    // nothing executed
+  }
+
+  // ALU operations
+  else if (isAluOpcode(opcode)) {
+    // Bus: REGS → TMP (rA), REGS → ACC (rB)
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'TMP', value: preA } });
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'ACC', value: preB } });
+    steps.push({
+      AluOperation: {
+        op: opName,
+        input_a: preA,
+        input_b: preB,
+        result: {
+          // CMP stores nothing: show the difference its flags come from
+          value: opcode === OP.CMP ? ((preA - preB) >>> 0) : postA,
+          carry: flags.carry,
+          zero: flags.zero,
+          a_larger: flags.a_larger,
+          equal: flags.equal,
+        },
+      },
+    });
+    if (opcode !== OP.CMP) {
+      steps.push({ BusTransfer: { source: 'ALU', dest: 'REGS', value: postA } });
+    }
+  }
+
+  // DATA rA, imm32
+  else if (opcode === OP.DATA) {
+    steps.push({ BusTransfer: { source: { Immediate: postA }, dest: 'REGS', value: postA } });
+  }
+
+  // LOAD / LOAD32 rA, [addr24]
+  else if (opcode === OP.LOAD || opcode === OP.LOAD32) {
+    const mAddr = probe.readAddr24(addr + 2);
+    steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
+    steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
+  }
+
+  // STORE (the byte) / STORE32 (the word) rA, [addr24]
+  else if (opcode === OP.STORE || opcode === OP.STORE32) {
+    const mAddr = probe.readAddr24(addr + 2);
+    steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: opcode === OP.STORE ? preA & 0xFF : preA } });
+  }
+
+  // LDRI / LDRI32 rA, rB
+  else if (opcode === OP.LDRI || opcode === OP.LDRI32) {
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
+    steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
+  }
+
+  // STRI (the byte) / STRI32 (the word) rA, rB
+  else if (opcode === OP.STRI || opcode === OP.STRI32) {
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: opcode === OP.STRI ? preA & 0xFF : preA } });
+  }
+
+  // PUSH rA
+  else if (opcode === OP.PUSH) {
+    steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: sp } });
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA } });
+  }
+
+  // POP rA
+  else if (opcode === OP.POP) {
+    steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: (sp - 4) & MEM_MASK } });
+    steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
+  }
+
+  // JMP/JC/JA/JE/JZ/JNZ
+  else if ((opcode >= OP.JMP && opcode <= OP.JE) || opcode === OP.JZ || opcode === OP.JNZ) {
+    const target = probe.readAddr24(addr + 1) & MEM_MASK;
+    steps.push({ BusTransfer: { source: { Immediate: target }, dest: 'IAR', value: target } });
+  }
+
+  // JMPR rA
+  else if (opcode === OP.JMPR) {
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'IAR', value: preA & MEM_MASK } });
+  }
+
+  // CALL addr24
+  else if (opcode === OP.CALL) {
+    const target = probe.readAddr24(addr + 1) & MEM_MASK;
+    steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: sp } });
+    steps.push({ BusTransfer: { source: 'IAR', dest: 'RAM', value: (addr + 4) & MEM_MASK } });
+    steps.push({ BusTransfer: { source: { Immediate: target }, dest: 'IAR', value: target } });
+  }
+
+  // RET
+  else if (opcode === OP.RET) {
+    steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: (sp - 4) & MEM_MASK } });
+    steps.push({ BusTransfer: { source: 'RAM', dest: 'IAR', value: probe.getPc() } });
+  }
+
+  // OUT rA
+  else if (opcode === OP.OUT) {
+    steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA & 0xFF } });
+  }
+
+  return {
+    address: addr,
+    opcode: opName,
+    reg_a: `R${rA}`,
+    reg_b: `R${rB}`,
+    steps,
+    flags,
+    cycle: probe.getCycleCount(),
+    halted: probe.isHalted(),
+    error: fault,
+  };
+}
+
 // ── MockComputer — Pure JavaScript CPU engine ────────────────────────────
 
 export class MockComputer implements IComputer {
   private mem: Uint8Array;
   private r: Uint32Array;         // 16 × 32-bit registers
-  private iar: number = 0;
-  private sp: number = INIT_SP;
-  private cycleCount: number = 0;
+  private iar: number = 0;        // always masked to 22 bits
+  private sp: number = INIT_SP;   // always masked to 22 bits
+  private cycleCount: number = 0; // a double: exact up to 2^53, never wraps
 
   // Flags
   private carry = false;
@@ -279,12 +481,15 @@ export class MockComputer implements IComputer {
   private halted = false;
   private inputWaiting = false;
   private inputRegister = 0;
+  private fault: string | null = null;
 
   // Console
   private consoleBuffer: number[] = [];
 
   // Breakpoints
   private breakpoints = new Set<number>();
+  /** The breakpoint the last run() stopped at; the next run() starting there executes it. */
+  private bpResume: number | null = null;
 
   // Vsync
   private skipVsync = false;
@@ -314,17 +519,18 @@ export class MockComputer implements IComputer {
     this.mem[addr & MEM_MASK] = val & 0xFF;
   }
 
+  /** 32-bit read; each byte address wraps (PUSH/POP/RET use it at any SP). */
   private read32(addr: number): number {
     const a = addr & MEM_MASK;
-    return this.mem[a]
+    return (this.mem[a]
          | (this.mem[(a + 1) & MEM_MASK] << 8)
          | (this.mem[(a + 2) & MEM_MASK] << 16)
-         | (this.mem[(a + 3) & MEM_MASK] << 24);
+         | (this.mem[(a + 3) & MEM_MASK] << 24)) >>> 0;
   }
 
   private write32(addr: number, val: number): void {
     const a = addr & MEM_MASK;
-    this.mem[a]                      = val & 0xFF;
+    this.mem[a]                  = val & 0xFF;
     this.mem[(a + 1) & MEM_MASK] = (val >>> 8) & 0xFF;
     this.mem[(a + 2) & MEM_MASK] = (val >>> 16) & 0xFF;
     this.mem[(a + 3) & MEM_MASK] = (val >>> 24) & 0xFF;
@@ -369,7 +575,7 @@ export class MockComputer implements IComputer {
         flags: null,
         cycle: this.cycleCount,
         halted: true,
-        error: null,
+        error: this.fault,
       };
     }
 
@@ -378,174 +584,39 @@ export class MockComputer implements IComputer {
     const regByte = this.mem[(addr + 1) & MEM_MASK];
     const rA = (regByte >> 4) & 0x0F;
     const rB = regByte & 0x0F;
-    const opName = getOpcodeName(opcode);
 
     // Capture pre-execution state for trace generation
     const preA = this.r[rA] >>> 0;
     const preB = this.r[rB] >>> 0;
 
-    const steps: MicroStep[] = [
-      { FetchInstruction: { address: addr, value: opcode } },
-      // Fetch cycle: IAR → MAR → RAM → IR
-      { BusTransfer: { source: 'IAR', dest: 'MAR', value: addr } },
-      { BusTransfer: { source: 'RAM', dest: 'IR', value: opcode } },
-    ];
-
-    // Execute one instruction
+    // Execute one instruction, even on a breakpoint
+    this.bpResume = addr;
     this.run(1);
 
-    // Generate detailed trace micro-steps based on opcode
-    const postA = this.r[rA] >>> 0;
-    const flags = this.getFlags();
-
-    // ALU operations
-    if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
-        || opcode === OP.SHRN || opcode === OP.SHLN
-        || opcode === OP.IDIV || opcode === OP.IMOD
-        || opcode === OP.FPMUL) {
-      // Bus: REGS → TMP (rA), REGS → ACC (rB)
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'TMP', value: preA } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'ACC', value: preB } });
-      steps.push({
-        AluOperation: {
-          op: opName,
-          input_a: preA,
-          input_b: preB,
-          result: {
-            value: postA,
-            carry: flags.carry,
-            zero: flags.zero,
-            a_larger: flags.a_larger,
-            equal: flags.equal,
-          },
-        },
-      });
-      if (opcode !== OP.CMP) {
-        steps.push({ BusTransfer: { source: 'ALU', dest: 'REGS', value: postA } });
-      }
-    }
-
-    // DATA rA, imm32
-    else if (opcode === OP.DATA) {
-      const imm = postA;
-      steps.push({ BusTransfer: { source: { Immediate: imm }, dest: 'REGS', value: imm } });
-    }
-
-    // LOAD rA, [addr24] — byte load
-    else if (opcode === OP.LOAD) {
-      const mAddr = this.readAddr24(addr + 2);
-      steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
-    }
-
-    // STORE rA, [addr24] — byte store
-    else if (opcode === OP.STORE) {
-      const mAddr = this.readAddr24(addr + 2);
-      steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA & 0xFF } });
-    }
-
-    // LOAD32 rA, [addr24]
-    else if (opcode === OP.LOAD32) {
-      const mAddr = this.readAddr24(addr + 2);
-      steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
-    }
-
-    // STORE32 rA, [addr24]
-    else if (opcode === OP.STORE32) {
-      const mAddr = this.readAddr24(addr + 2);
-      steps.push({ BusTransfer: { source: { Immediate: mAddr }, dest: 'MAR', value: mAddr } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA } });
-    }
-
-    // LDRI rA, rB — byte load from [rB]
-    else if (opcode === OP.LDRI) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
-    }
-
-    // STRI rA, rB — byte store to [rB]
-    else if (opcode === OP.STRI) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA & 0xFF } });
-    }
-
-    // LDRI32 rA, rB
-    else if (opcode === OP.LDRI32) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
-    }
-
-    // STRI32 rA, rB
-    else if (opcode === OP.STRI32) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'MAR', value: preB } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA } });
-    }
-
-    // PUSH rA
-    else if (opcode === OP.PUSH) {
-      steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: this.sp } });
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA } });
-    }
-
-    // POP rA
-    else if (opcode === OP.POP) {
-      steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: this.sp - 4 } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'REGS', value: postA } });
-    }
-
-    // JMP/JC/JA/JE/JZ/JNZ
-    else if (opcode >= OP.JMP && opcode <= OP.JE
-          || opcode === OP.JZ || opcode === OP.JNZ) {
-      const target = this.readAddr24(addr + 1);
-      steps.push({ BusTransfer: { source: { Immediate: target }, dest: 'IAR', value: target } });
-    }
-
-    // JMPR rA
-    else if (opcode === OP.JMPR) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'IAR', value: preA } });
-    }
-
-    // CALL addr24
-    else if (opcode === OP.CALL) {
-      const target = this.readAddr24(addr + 1);
-      steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: this.sp } });
-      steps.push({ BusTransfer: { source: 'IAR', dest: 'RAM', value: addr + 4 } });
-      steps.push({ BusTransfer: { source: { Immediate: target }, dest: 'IAR', value: target } });
-    }
-
-    // RET
-    else if (opcode === OP.RET) {
-      steps.push({ BusTransfer: { source: 'SP', dest: 'MAR', value: this.sp - 4 } });
-      steps.push({ BusTransfer: { source: 'RAM', dest: 'IAR', value: this.iar } });
-    }
-
-    // OUT rA
-    else if (opcode === OP.OUT) {
-      steps.push({ BusTransfer: { source: 'REGS', dest: 'RAM', value: preA & 0xFF } });
-    }
-
-    return {
-      address: addr,
-      opcode: opName,
-      reg_a: `R${rA}`,
-      reg_b: `R${rB}`,
-      steps,
-      flags,
-      cycle: this.cycleCount,
-      halted: this.halted,
-      error: null,
-    };
+    return buildStepTrace(addr, opcode, rA, rB, preA, preB, {
+      readAddr24: (o) => this.readAddr24(o),
+      getRegister: (i) => this.r[i],
+      getSp: () => this.sp,
+      getPc: () => this.iar,
+      getFlags: () => this.getFlags(),
+      getCycleCount: () => this.cycleCount,
+      isHalted: () => this.halted,
+    }, this.fault);
   }
 
   run(maxCycles: number): number {
     let executed = 0;
     const hasBp = this.breakpoints.size > 0;
+    let skipBp = this.bpResume === this.iar;
+    this.bpResume = null;
 
     for (let c = 0; c < maxCycles; c++) {
       if (this.halted || this.inputWaiting) break;
-      if (executed > 0 && hasBp && this.breakpoints.has(this.iar)) break;
+      if (hasBp && !skipBp && this.breakpoints.has(this.iar)) {
+        this.bpResume = this.iar;
+        break;
+      }
+      skipBp = false;
 
       const addr = this.iar & MEM_MASK;
       const opcode = this.mem[addr];
@@ -559,15 +630,19 @@ export class MockComputer implements IComputer {
         break;
       }
 
+      // Undefined opcode: fault, IAR stays on it
+      if (opcode > LAST_OPCODE) {
+        this.fault = illegalOpcodeMessage(opcode, addr);
+        this.halted = true;
+        break;
+      }
+
       // Instruction size
       const size = instrSize(opcode);
       this.iar = (this.iar + size) & MEM_MASK;
 
       // ── ALU operations ──
-      if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
-          || opcode === OP.SHRN || opcode === OP.SHLN
-          || opcode === OP.IDIV || opcode === OP.IMOD
-          || opcode === OP.FPMUL) {
+      if (isAluOpcode(opcode)) {
         const a = this.r[rA] >>> 0;
         const b = this.r[rB] >>> 0;
         let result = 0;
@@ -637,7 +712,12 @@ export class MockComputer implements IComputer {
           case OP.AND: { result = (a & b) >>> 0; break; }
           case OP.OR:  { result = (a | b) >>> 0; break; }
           case OP.XOR: { result = (a ^ b) >>> 0; break; }
-          case OP.CMP: { result = a; break; }
+          case OP.CMP: {
+            // Flags as for rA − rB; nothing is stored
+            result = (a - b) >>> 0;
+            carry = a < b;
+            break;
+          }
           case OP.MOV: { result = b; break; }
           case OP.SHR8: {
             result = a >>> 8;
@@ -646,7 +726,7 @@ export class MockComputer implements IComputer {
           }
           case OP.SHL8: {
             result = (a << 8) >>> 0;
-            carry = (a & 0x00800000) !== 0;
+            carry = (a >>> 24) !== 0;  // any of the 8 bits shifted out
             break;
           }
           case OP.SHRN: {
@@ -664,10 +744,14 @@ export class MockComputer implements IComputer {
           }
           case OP.FPMUL: {
             // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
-            const sa = a | 0;  // interpret as signed i32
-            const sb = b | 0;
-            const prod = BigInt(sa) * BigInt(sb);  // signed 64-bit product
-            result = (Number((prod >> 8n) & 0xFFFFFFFFn)) >>> 0;
+            const prod = BigInt(a | 0) * BigInt(b | 0);  // signed 64-bit product
+            result = Number((prod >> 8n) & 0xFFFFFFFFn) >>> 0;
+            break;
+          }
+          case OP.FPMUL16: {
+            // Signed 16.16 fixed-point multiply: rA = (rA * rB) >> 16
+            const prod = BigInt(a | 0) * BigInt(b | 0);
+            result = Number((prod >> 16n) & 0xFFFFFFFFn) >>> 0;
             break;
           }
         }
@@ -684,15 +768,14 @@ export class MockComputer implements IComputer {
 
       // ── LOAD rA, [addr24] — load 1 byte, zero-extend ──
       else if (opcode === OP.LOAD) {
-        const mAddr = this.readAddr24(addr + 2);
-        this.r[rA] = this.read8(mAddr);
+        this.r[rA] = this.read8(this.readAddr24(addr + 2));
       }
 
       // ── STORE rA, [addr24] — store low byte ──
       else if (opcode === OP.STORE) {
-        const mAddr = this.readAddr24(addr + 2);
-        this.write8(mAddr, this.r[rA] & 0xFF);
-        if (mAddr === VSYNC_ADDR && executed > 0 && !this.skipVsync) {
+        const m = this.readAddr24(addr + 2) & MEM_MASK;
+        this.write8(m, this.r[rA]);
+        if (m === VSYNC_ADDR && !this.skipVsync) {
           this.pageFlip();
           this.cycleCount++;
           executed++;
@@ -702,16 +785,18 @@ export class MockComputer implements IComputer {
 
       // ── LOAD32 rA, [addr24] — load 4 bytes LE ──
       else if (opcode === OP.LOAD32) {
-        const mAddr = this.readAddr24(addr + 2);
-        this.r[rA] = this.read32(mAddr) >>> 0;
+        const m = this.readAddr24(addr + 2) & MEM_MASK;
+        if (m > LAST_WORD_ADDR) { this.wordFault(m, addr); break; }
+        this.r[rA] = this.read32(m);
       }
 
       // ── STORE32 rA, [addr24] — store 4 bytes LE ──
       else if (opcode === OP.STORE32) {
-        const mAddr = this.readAddr24(addr + 2);
-        this.write32(mAddr, this.r[rA]);
-        if (mAddr <= VSYNC_ADDR && mAddr + 3 >= VSYNC_ADDR
-            && executed > 0 && !this.skipVsync) {
+        const m = this.readAddr24(addr + 2) & MEM_MASK;
+        if (m > LAST_WORD_ADDR) { this.wordFault(m, addr); break; }
+        this.write32(m, this.r[rA]);
+        // The only word that covers 0x3FFFFF starts at 0x3FFFFC
+        if (m === LAST_WORD_ADDR && !this.skipVsync) {
           this.pageFlip();
           this.cycleCount++;
           executed++;
@@ -736,9 +821,9 @@ export class MockComputer implements IComputer {
 
       // ── STRI rA, rB — store low byte to [rB] ──
       else if (opcode === OP.STRI) {
-        const mAddr = this.r[rB];
-        this.write8(mAddr, this.r[rA] & 0xFF);
-        if (mAddr === VSYNC_ADDR && executed > 0 && !this.skipVsync) {
+        const m = this.r[rB] & MEM_MASK;
+        this.write8(m, this.r[rA]);
+        if (m === VSYNC_ADDR && !this.skipVsync) {
           this.pageFlip();
           this.cycleCount++;
           executed++;
@@ -748,15 +833,17 @@ export class MockComputer implements IComputer {
 
       // ── LDRI32 rA, rB — load 32-bit word from [rB] ──
       else if (opcode === OP.LDRI32) {
-        this.r[rA] = this.read32(this.r[rB]) >>> 0;
+        const m = this.r[rB] & MEM_MASK;
+        if (m > LAST_WORD_ADDR) { this.wordFault(m, addr); break; }
+        this.r[rA] = this.read32(m);
       }
 
       // ── STRI32 rA, rB — store 32-bit word to [rB] ──
       else if (opcode === OP.STRI32) {
-        const mAddr = this.r[rB];
-        this.write32(mAddr, this.r[rA]);
-        if (mAddr <= VSYNC_ADDR && mAddr + 3 >= VSYNC_ADDR
-            && executed > 0 && !this.skipVsync) {
+        const m = this.r[rB] & MEM_MASK;
+        if (m > LAST_WORD_ADDR) { this.wordFault(m, addr); break; }
+        this.write32(m, this.r[rA]);
+        if (m === LAST_WORD_ADDR && !this.skipVsync) {
           this.pageFlip();
           this.cycleCount++;
           executed++;
@@ -772,53 +859,48 @@ export class MockComputer implements IComputer {
 
       // ── POP rA — pop 32-bit value (SP += 4) ──
       else if (opcode === OP.POP) {
-        this.r[rA] = this.read32(this.sp) >>> 0;
+        this.r[rA] = this.read32(this.sp);
         this.sp = (this.sp + 4) & MEM_MASK;
       }
 
       // ── JMP addr24 ──
       else if (opcode === OP.JMP) {
-        this.iar = this.readAddr24(addr + 1);
+        this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JC addr24 ──
       else if (opcode === OP.JC) {
-        const target = this.readAddr24(addr + 1);
-        if (this.carry) this.iar = target;
+        if (this.carry) this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JA addr24 ──
       else if (opcode === OP.JA) {
-        const target = this.readAddr24(addr + 1);
-        if (this.aLarger) this.iar = target;
+        if (this.aLarger) this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JE addr24 ──
       else if (opcode === OP.JE) {
-        const target = this.readAddr24(addr + 1);
-        if (this.equal) this.iar = target;
+        if (this.equal) this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JZ addr24 ──
       else if (opcode === OP.JZ) {
-        const target = this.readAddr24(addr + 1);
-        if (this.zero) this.iar = target;
+        if (this.zero) this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JNZ addr24 ──
       else if (opcode === OP.JNZ) {
-        const target = this.readAddr24(addr + 1);
-        if (!this.zero) this.iar = target;
+        if (!this.zero) this.iar = this.readAddr24(addr + 1) & MEM_MASK;
       }
 
       // ── JMPR rA ──
       else if (opcode === OP.JMPR) {
-        this.iar = this.r[rA];
+        this.iar = this.r[rA] & MEM_MASK;
       }
 
       // ── CALL addr24 ──
       else if (opcode === OP.CALL) {
-        const target = this.readAddr24(addr + 1);
+        const target = this.readAddr24(addr + 1) & MEM_MASK;
         const retAddr = this.iar;
         this.sp = (this.sp - 4) & MEM_MASK;
         this.write32(this.sp, retAddr);
@@ -827,7 +909,7 @@ export class MockComputer implements IComputer {
 
       // ── RET ──
       else if (opcode === OP.RET) {
-        this.iar = this.read32(this.sp) >>> 0;
+        this.iar = this.read32(this.sp) & MEM_MASK;
         this.sp = (this.sp + 4) & MEM_MASK;
       }
 
@@ -840,7 +922,7 @@ export class MockComputer implements IComputer {
       else if (opcode === OP.IN) {
         this.inputWaiting = true;
         this.inputRegister = rA;
-        this.iar = (this.iar - size) & MEM_MASK; // rewind
+        this.iar = addr; // rewind: provideInput() moves past it
         break;
       }
 
@@ -849,6 +931,13 @@ export class MockComputer implements IComputer {
     }
 
     return executed;
+  }
+
+  /** A 32-bit access at `m` would run past 0x3FFFFF: halt, IAR back on the instruction. */
+  private wordFault(m: number, addr: number): void {
+    this.fault = wordPastEndMessage(m);
+    this.halted = true;
+    this.iar = addr;
   }
 
   getState(): CpuState {
@@ -893,6 +982,9 @@ export class MockComputer implements IComputer {
     this.zero = true;
     this.halted = false;
     this.inputWaiting = false;
+    this.inputRegister = 0;
+    this.fault = null;
+    this.bpResume = null;
     this.consoleBuffer = [];
   }
 
@@ -927,6 +1019,8 @@ export class MockComputer implements IComputer {
     }
   }
 
+  getFault(): string | null { return this.fault; }
+
   getPc(): number { return this.iar; }
   getCycleCount(): number { return this.cycleCount; }
   getRegister(index: number): number { return this.r[index & 0x0F]; }
@@ -948,6 +1042,10 @@ export class MockComputer implements IComputer {
       state: this.getState(),
       memory: new Uint8Array(this.mem),
       console: [...this.consoleBuffer],
+      inputWaiting: this.inputWaiting,
+      inputRegister: this.inputRegister,
+      fault: this.fault,
+      breakpointResume: this.bpResume,
     };
   }
 
@@ -958,8 +1056,8 @@ export class MockComputer implements IComputer {
     for (let i = 0; i < 16; i++) {
       this.r[i] = snap.state.r[i] ?? 0;
     }
-    this.iar = snap.state.iar;
-    this.sp = snap.state.sp;
+    this.iar = snap.state.iar & MEM_MASK;
+    this.sp = snap.state.sp & MEM_MASK;
     this.cycleCount = snap.state.cycle_count;
     this.halted = snap.state.halted;
     this.carry = snap.state.flags.carry;
@@ -967,10 +1065,15 @@ export class MockComputer implements IComputer {
     this.equal = snap.state.flags.equal;
     this.zero = snap.state.flags.zero;
     this.consoleBuffer = [...snap.console];
-    this.inputWaiting = false;
+    this.inputWaiting = snap.inputWaiting ?? false;
+    this.inputRegister = (snap.inputRegister ?? 0) & 0x0F;
+    this.fault = snap.fault ?? null;
+    this.bpResume = snap.breakpointResume ?? null;
   }
 
   setSkipVsync(skip: boolean): void { this.skipVsync = skip; }
+
+  dispose(): void { /* nothing to free: the GC owns the memory */ }
 
   // ── Private helpers ────────────────────────────────────────────────────
 
