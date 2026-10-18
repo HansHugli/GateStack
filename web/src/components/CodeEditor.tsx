@@ -1,20 +1,39 @@
 import React, { useRef, useCallback, useMemo, useState, useEffect } from 'react';
-import { assemble, AssemblyResult } from '../assembler';
+import type { AssemblyResult } from '../assembler';
 import { OP, getOpcodeName, instrSize } from '../wasm-bridge';
 
 interface Props {
   code: string;
   onChange: (code: string) => void;
+  /** Assemble the editor text and load it into RAM. */
+  onAssemble: () => AssemblyResult;
+  /** Assembly of the program that is in RAM (drives PC highlight and breakpoints). */
+  loadedResult: AssemblyResult | null;
+  /** Result of the last Assemble press, cleared on the next edit. */
+  lastAssembly: AssemblyResult | null;
+  /** Is the editor text the program in RAM? */
+  status: 'loaded' | 'modified' | 'not-loaded';
   currentAddress: number;
-  onLoadBytes: (bytes: number[]) => void;
   breakpoints: Set<number>;
   onToggleBreakpoint: (addr: number) => void;
+  sampleName: string;
+  canRevert: boolean;
+  onRevert: () => void;
 }
 
 const FONT_FAMILY = "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
 const FONT_SIZE = '0.78rem';
 const LINE_HEIGHT = 20;
 const PADDING_TOP = 10;
+const PADDING_BOTTOM = 10;
+const TAB_STOP = 8;
+
+// FPMUL16 (16.16 fixed point) is new in the shared engine contract.
+const OP_FPMUL16: number = (OP as Record<string, number>).FPMUL16 ?? 0x2C;
+const opName = (opcode: number) => {
+  const n = getOpcodeName(opcode);
+  return n === '???' && opcode === OP_FPMUL16 ? 'FPMUL16' : n;
+};
 
 const EDITOR_STYLES = `
   @keyframes highlightPulse {
@@ -34,38 +53,17 @@ const EDITOR_STYLES = `
   }
 `;
 
-// Instruction sizes for address mapping
-const MNEMONICS_SIZE: Record<string, number> = {
-  HALT: 2, ADD: 2, SUB: 2, MUL: 2, MULH: 2, DIV: 2, MOD: 2,
-  IDIV: 2, IMOD: 2, FPMUL: 2,
-  SHR: 2, SHL: 2, SHR8: 2, SHL8: 2, SHRN: 2, SHLN: 2,
-  NOT: 2, AND: 2, OR: 2, XOR: 2, CMP: 2, MOV: 2,
-  PUSH: 2, POP: 2, LDRI: 2, STRI: 2, LDRI32: 2, STRI32: 2,
-  OUT: 2, IN: 2, JMPR: 2, RET: 2,
-  LOAD: 5, STORE: 5, LOAD32: 5, STORE32: 5,
-  DATA: 6,
-  JMP: 4, JC: 4, JA: 4, JE: 4, JZ: 4, JNZ: 4, CALL: 4,
-  DB: 1, DW: 2, DD: 4,
-};
-
-function buildAddressToLineMap(code: string): Map<number, number> {
+/**
+ * 0-based editor line for each instruction address, from the assembler's own
+ * map (which numbers lines from 1). Only addresses inside the program count.
+ */
+export function instructionLines(result: AssemblyResult | null): Map<number, number> {
   const map = new Map<number, number>();
-  const lines = code.split('\n');
-  let addr = 0;
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
-    const ci = line.indexOf(';');
-    if (ci >= 0) line = line.substring(0, ci);
-    line = line.trim();
-    if (!line) continue;
-    const lm = line.match(/^[a-zA-Z_]\w*\s*:\s*(.*)/);
-    const rest = lm ? lm[1].trim() : line;
-    if (!rest) continue;
-    const mnemonic = rest.split(/[\s,]+/)[0].toUpperCase();
-    map.set(addr, i);
-    const size = MNEMONICS_SIZE[mnemonic] ?? 2;
-    addr += size;
-  }
+  if (!result?.success) return map;
+  const size = result.size ?? result.bytes.length;
+  result.addressToLine?.forEach((line, addr) => {
+    if (addr < size && line > 0) map.set(addr, line - 1);
+  });
   return map;
 }
 
@@ -85,7 +83,7 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
     const opcode = bytes[i];
     const label = addrToLabel.get(addr);
     const size = instrSize(opcode);
-    const opName = getOpcodeName(opcode);
+    const name = opName(opcode);
 
     if (i + size > bytes.length) break;
 
@@ -101,34 +99,30 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
     } else if (opcode === OP.RET) {
       decoded = 'RET';
     } else if (opcode === OP.DATA) {
-      // 6 bytes: opcode + reg + imm32 LE
       const val = (bytes[i + 2] | (bytes[i + 3] << 8) | (bytes[i + 4] << 16) | (bytes[i + 5] << 24)) >>> 0;
       decoded = `DATA R${rA}, ${val}`;
     } else if (opcode === OP.LOAD || opcode === OP.STORE || opcode === OP.LOAD32 || opcode === OP.STORE32) {
-      // 5 bytes: opcode + reg + addr24 LE
       const memAddr = bytes[i + 2] | (bytes[i + 3] << 8) | (bytes[i + 4] << 16);
       const targetLabel = addrToLabel.get(memAddr);
-      decoded = `${opName} R${rA}, [${targetLabel ?? ('0x' + h6(memAddr))}]`;
+      decoded = `${name} R${rA}, [${targetLabel ?? ('0x' + h6(memAddr))}]`;
     } else if (opcode === OP.JMP || opcode === OP.JC || opcode === OP.JA || opcode === OP.JE
             || opcode === OP.JZ || opcode === OP.JNZ || opcode === OP.CALL) {
-      // 4 bytes: opcode + addr24 LE
       const target = bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16);
       const targetLabel = addrToLabel.get(target);
-      decoded = `${opName} ${targetLabel ?? ('0x' + h6(target))}`;
+      decoded = `${name} ${targetLabel ?? ('0x' + h6(target))}`;
     } else if (opcode === OP.PUSH || opcode === OP.POP || opcode === OP.OUT || opcode === OP.IN || opcode === OP.JMPR) {
-      decoded = `${opName} R${rA}`;
+      decoded = `${name} R${rA}`;
     } else if ((opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
             || opcode === OP.SHRN || opcode === OP.SHLN
             || opcode === OP.IDIV || opcode === OP.IMOD
-            || opcode === OP.FPMUL
+            || opcode === OP.FPMUL || opcode === OP_FPMUL16
             || opcode === OP.LDRI || opcode === OP.STRI
             || opcode === OP.LDRI32 || opcode === OP.STRI32) {
-      // ALU: 2 bytes — some are single-operand
       if (opcode === OP.NOT || opcode === OP.SHR || opcode === OP.SHL
           || opcode === OP.SHR8 || opcode === OP.SHL8) {
-        decoded = `${opName} R${rA}`;
+        decoded = `${name} R${rA}`;
       } else {
-        decoded = `${opName} R${rA}, R${rB}`;
+        decoded = `${name} R${rA}, R${rB}`;
       }
     } else {
       decoded = `??? (0x${h2(opcode)})`;
@@ -141,24 +135,21 @@ function disassemble(bytes: number[], labels: Map<string, number>): Array<{
 }
 
 function h2(n: number) { return (n & 0xFF).toString(16).padStart(2, '0').toUpperCase(); }
-function h4(n: number) { return n.toString(16).padStart(6, '0').toUpperCase(); }
-function h6(n: number) { return n.toString(16).padStart(6, '0').toUpperCase(); }
+function h6(n: number) { return (n >>> 0).toString(16).padStart(6, '0').toUpperCase(); }
 
-function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
+function DisassemblyView({ bytes, labels, currentAddress }: {
   bytes: number[];
-  addressToLine: Map<number, number>;
   labels: Map<string, number>;
   currentAddress: number;
 }) {
   const listing = useMemo(() => disassemble(bytes, labels), [bytes, labels]);
 
   return (
-    <div style={{ fontFamily: FONT_FAMILY, fontSize: '0.68rem' }}>
-      {/* Header */}
+    <div style={{ fontFamily: FONT_FAMILY, fontSize: '0.6875rem' }}>
       <div style={{
-        display: 'grid', gridTemplateColumns: '48px 100px 1fr',
+        display: 'grid', gridTemplateColumns: '56px 120px 1fr',
         gap: '8px', padding: '2px 0', marginBottom: '4px',
-        borderBottom: '1px solid #1e293b', color: '#475569', fontWeight: 600,
+        borderBottom: '1px solid #1e293b', color: 'var(--text-muted)', fontWeight: 600,
       }}>
         <span>Addr</span>
         <span>Hex</span>
@@ -169,38 +160,29 @@ function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
         const isPC = entry.addr === currentAddress;
         return (
           <div key={i}>
-            {/* Label line */}
             {entry.label && (
               <div style={{ color: '#c084fc', fontWeight: 600, padding: '2px 0 0 0' }}>
                 {entry.label}:
               </div>
             )}
-            {/* Instruction line */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '48px 100px 1fr',
+              display: 'grid', gridTemplateColumns: '56px 120px 1fr',
               gap: '8px', padding: '1px 4px',
               borderRadius: isPC ? '4px' : '0',
               background: isPC ? 'rgba(250, 204, 21, 0.1)' : 'transparent',
               borderLeft: isPC ? '2px solid #fcd34d' : '2px solid transparent',
             }}>
-              <span style={{ color: isPC ? '#fcd34d' : '#475569' }}>
-                {h4(entry.addr)}
-              </span>
-              <span style={{ color: isPC ? '#e2e8f0' : '#64748b' }}>
-                {entry.hex}
-              </span>
-              <span style={{ color: isPC ? '#fcd34d' : '#94a3b8' }}>
-                {entry.decoded}
-              </span>
+              <span style={{ color: isPC ? '#fcd34d' : 'var(--text-dim)' }}>{h6(entry.addr)}</span>
+              <span style={{ color: isPC ? '#e2e8f0' : 'var(--text-muted)' }}>{entry.hex}</span>
+              <span style={{ color: isPC ? '#fcd34d' : 'var(--text-secondary)' }}>{entry.decoded}</span>
             </div>
           </div>
         );
       })}
 
-      {/* Raw hex dump */}
       <div style={{
         marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #1e293b',
-        color: '#334155', wordBreak: 'break-all',
+        color: 'var(--text-dim)', wordBreak: 'break-all',
       }}>
         {bytes.map(b => h2(b)).join(' ')}
       </div>
@@ -208,28 +190,41 @@ function DisassemblyView({ bytes, addressToLine, labels, currentAddress }: {
   );
 }
 
-export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes, breakpoints, onToggleBreakpoint }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const lineNumbersRef = useRef<HTMLDivElement>(null);
+/** Insert spaces up to the next tab stop at the caret (keeps native undo where possible). */
+function insertTab(ta: HTMLTextAreaElement, onChange: (s: string) => void) {
+  const { selectionStart: start, selectionEnd: end, value } = ta;
+  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+  const col = start - lineStart;
+  const spaces = ' '.repeat(TAB_STOP - (col % TAB_STOP));
+  ta.focus();
+  // execCommand keeps the browser's undo stack and fires the input event React listens to.
+  const ok = typeof document.execCommand === 'function' && document.execCommand('insertText', false, spaces);
+  if (!ok) {
+    const next = value.slice(0, start) + spaces + value.slice(end);
+    onChange(next);
+    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + spaces.length; });
+  }
+}
 
-  const [lastResult, setLastResult] = useState<AssemblyResult | null>(null);
+export default function CodeEditor({
+  code, onChange, onAssemble, loadedResult, lastAssembly, status,
+  currentAddress, breakpoints, onToggleBreakpoint, sampleName, canRevert, onRevert,
+}: Props) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBytes, setShowBytes] = useState(true);
   const [scrollTop, setScrollTop] = useState(0);
-  const [editorFlex, setEditorFlex] = useState(3); // flex ratio for editor vs output
+  const [editorFlex, setEditorFlex] = useState(3);
   const dragRef = useRef<{ startY: number; startFlex: number } | null>(null);
+  const successTimer = useRef<number | undefined>(undefined);
 
-  // Clear assembler state when code changes externally
-  const prevCodeRef = useRef(code);
-  useEffect(() => {
-    if (code !== prevCodeRef.current) {
-      prevCodeRef.current = code;
-      setLastResult(null);
-      setShowSuccess(false);
-    }
-  }, [code]);
-
-  const addrToLine = useMemo(() => buildAddressToLineMap(code), [code]);
+  const isLoaded = status === 'loaded';
+  // The PC highlight and breakpoints describe the program in RAM; they only
+  // line up with the editor while the editor holds exactly that program.
+  const addrToLine = useMemo(
+    () => (isLoaded ? instructionLines(loadedResult) : new Map<number, number>()),
+    [loadedResult, isLoaded],
+  );
   const lineToAddr = useMemo(() => {
     const m = new Map<number, number>();
     addrToLine.forEach((line, addr) => m.set(line, addr));
@@ -238,7 +233,6 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
   const activeLine = addrToLine.get(currentAddress) ?? -1;
   const lines = code.split('\n');
 
-  // Which lines have breakpoints?
   const breakpointLines = useMemo(() => {
     const s = new Set<number>();
     breakpoints.forEach(addr => {
@@ -258,281 +252,246 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
       if (lineTop < viewTop + LINE_HEIGHT || lineTop > viewBottom - LINE_HEIGHT * 2) {
         const target = Math.max(0, lineTop - ta.clientHeight / 3);
         ta.scrollTop = target;
-        if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = target;
-        setScrollTop(target);
+        setScrollTop(ta.scrollTop);
       }
     }
   }, [activeLine]);
 
-  // Error line numbers (1-indexed from assembler, convert to 0-indexed)
+  const failed = lastAssembly && !lastAssembly.success ? lastAssembly : null;
   const errorLines = useMemo(() => {
     const set = new Set<number>();
-    lastResult?.errors?.forEach(e => { if (e.line > 0) set.add(e.line - 1); });
+    failed?.errors?.forEach(e => { if (e.line > 0) set.add(e.line - 1); });
     return set;
-  }, [lastResult]);
+  }, [failed]);
 
   const handleScroll = useCallback(() => {
-    const st = textareaRef.current?.scrollTop ?? 0;
-    if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = st;
-    setScrollTop(st);
+    setScrollTop(textareaRef.current?.scrollTop ?? 0);
   }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAssemble = useCallback(() => {
-    const result = assemble(code);
-    setLastResult(result);
+    const result = onAssemble();
     if (result.success) {
-      onLoadBytes(result.bytes);
       setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 1200);
+      window.clearTimeout(successTimer.current);
+      successTimer.current = window.setTimeout(() => setShowSuccess(false), 1200);
     }
-  }, [code, onLoadBytes]);
+  }, [onAssemble]);
+
+  useEffect(() => () => window.clearTimeout(successTimer.current), []);
 
   const handleSave = useCallback(() => {
     const blob = new Blob([code], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'program.asm';
+    a.download = `${sampleName.replace(/[^\w.-]+/g, '_') || 'program'}.asm`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [code]);
-
-  const handleLoad = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
+  }, [code, sampleName]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const text = reader.result as string;
-      onChange(text);
-      setLastResult(null);
-    };
+    reader.onload = () => onChange(reader.result as string);
     reader.readAsText(file);
-    // Reset input so same file can be loaded again
-    e.target.value = '';
+    e.target.value = ''; // so the same file can be opened again
   }, [onChange]);
 
+  const smallBtn: React.CSSProperties = {
+    background: 'transparent', color: 'var(--text-muted)',
+    border: '1px solid var(--border-default)', borderRadius: '6px',
+    padding: '3px 8px', fontSize: '0.6875rem', fontWeight: 600, cursor: 'pointer',
+  };
+
   return (
-    <div style={{ flex: 1, padding: '10px 12px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ flex: 1, padding: '10px 12px', display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
       <style>{EDITOR_STYLES}</style>
 
-      {/* Header with Assemble button */}
+      {/* Header */}
       <div style={{
-        fontSize: '0.68rem', fontWeight: 700, color: 'var(--accent-green, #22c55e)',
+        fontSize: '0.6875rem', fontWeight: 700,
         marginBottom: '6px', flexShrink: 0,
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-          <div style={{
-            fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted, #4a5568)',
+          <h2 style={{
+            fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-muted)', margin: 0,
             textTransform: 'uppercase', letterSpacing: '1px',
             display: 'flex', alignItems: 'center', gap: 6,
           }}>
-            <div style={{ width: 3, height: 12, borderRadius: 2, background: 'var(--accent-green, #22c55e)' }} />
+            <div style={{ width: 3, height: 12, borderRadius: 2, background: 'var(--accent-green)' }} />
             Assembly
-          </div>
+          </h2>
           <button
             onClick={handleAssemble}
             style={{
-              background: '#16a34a',
-              color: '#fff',
-              border: '1px solid #22c55e',
-              borderRadius: '6px',
-              padding: '3px 12px',
-              fontSize: '0.68rem',
-              fontWeight: 700,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
+              background: '#16a34a', color: '#fff', border: '1px solid #22c55e',
+              borderRadius: '6px', padding: '3px 12px', fontSize: '0.6875rem', fontWeight: 700,
+              cursor: 'pointer', transition: 'all 0.15s',
             }}
             onMouseEnter={e => { e.currentTarget.style.background = '#15803d'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#16a34a'; }}
-            title="Assemble code and load into RAM (Ctrl+Enter)"
+            title="Assemble the code and load it into RAM (Ctrl+Enter)"
           >
             ▶ Assemble
           </button>
-          <button onClick={handleSave} style={{
-            background: 'transparent', color: 'var(--text-muted, #64748b)',
-            border: '1px solid var(--border-default, #334155)', borderRadius: '6px',
-            padding: '3px 8px', fontSize: '0.62rem', fontWeight: 600, cursor: 'pointer',
-          }} title="Save .asm">💾</button>
-          <button onClick={handleLoad} style={{
-            background: 'transparent', color: 'var(--text-muted, #64748b)',
-            border: '1px solid var(--border-default, #334155)', borderRadius: '6px',
-            padding: '3px 8px', fontSize: '0.62rem', fontWeight: 600, cursor: 'pointer',
-          }} title="Open .asm">📂</button>
-          <input ref={fileInputRef} type="file" accept=".asm,.txt,.s" onChange={handleFileChange} style={{ display: 'none' }} />
-          {lastResult && (
+          <button onClick={handleSave} style={smallBtn} title="Save as .asm file" aria-label="Save as .asm file">💾</button>
+          <button onClick={() => fileInputRef.current?.click()} style={smallBtn} title="Open .asm file" aria-label="Open .asm file">📂</button>
+          {canRevert && (
+            <button onClick={onRevert} style={smallBtn} title={`Throw away your edits and restore the original ${sampleName} program`}>
+              ↶ Revert to original
+            </button>
+          )}
+          <input ref={fileInputRef} type="file" accept=".asm,.txt,.s" onChange={handleFileChange} style={{ display: 'none' }} aria-hidden="true" tabIndex={-1} />
+
+          {failed ? (
+            <span style={{ fontSize: '0.6875rem', color: '#f87171', fontWeight: 600 }}>
+              ✗ {failed.errors.length} error{failed.errors.length === 1 ? '' : 's'} — RAM still holds the previous program
+            </span>
+          ) : status === 'modified' ? (
+            <span role="status" style={badge('var(--accent-amber)')}
+              title="The editor no longer matches the program in RAM. Step and Run use the program in RAM.">
+              ● modified — Ctrl+Enter to assemble
+            </span>
+          ) : status === 'not-loaded' ? (
+            <span role="status" style={badge('var(--accent-amber)')} title="RAM holds no assembled program">
+              ● not loaded — Ctrl+Enter to assemble
+            </span>
+          ) : loadedResult && (
             <span style={{
-              fontSize: '0.62rem',
-              color: lastResult.success ? '#4ade80' : '#f87171',
-              fontWeight: 600,
+              fontSize: '0.6875rem', color: '#4ade80', fontWeight: 600,
               ...(showSuccess ? { animation: 'successFlash 1.2s ease-out' } : {}),
-            }}>
-              {lastResult.success
-                ? `✓ ${lastResult.size ?? lastResult.bytes?.length ?? 0}B`
-                : `✗ ${lastResult.errors.length} err`
-              }
+            }} title="The editor matches the program in RAM">
+              ✓ loaded · {loadedResult.size ?? loadedResult.bytes.length} B
             </span>
           )}
         </div>
-        <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary, #94a3b8)', fontWeight: 400, fontFamily: FONT_FAMILY }}>
-          PC:{currentAddress.toString(16).padStart(6, '0').toUpperCase()}
-          {activeLine >= 0 && <span style={{ color: 'var(--accent-amber, #fcd34d)' }}> L{activeLine + 1}</span>}
+        <span style={{ fontSize: '0.6875rem', color: 'var(--text-secondary)', fontWeight: 400, fontFamily: FONT_FAMILY, whiteSpace: 'nowrap' }}>
+          PC:{h6(currentAddress)}
+          {activeLine >= 0 && <span style={{ color: 'var(--accent-amber)' }}> L{activeLine + 1}</span>}
         </span>
       </div>
 
       {/* Editor area — resizable */}
       <div style={{
-        flex: `${editorFlex} 1 0`, minHeight: '80px', background: 'var(--bg-elevated, #0f172a)',
-        borderRadius: '6px', border: '1px solid var(--border-subtle, #1e293b)', overflow: 'hidden',
-        display: 'flex',
+        flex: `${editorFlex} 1 0`, minHeight: '80px', background: 'var(--bg-elevated)',
+        borderRadius: '6px', border: `1px solid ${status === 'loaded' ? 'var(--border-subtle)' : 'var(--accent-amber-dim)'}`,
+        overflow: 'hidden', display: 'flex',
       }}>
-        {/* Line numbers gutter — click to toggle breakpoints */}
+        {/* Line-number gutter; click to toggle breakpoints. It moves with the
+            textarea through a transform, so it can't drift at the bottom. */}
         <div
-          ref={lineNumbersRef}
+          aria-hidden="true"
           style={{
-            paddingTop: `${PADDING_TOP}px`,
-            background: '#0c1222',
-            borderRight: '1px solid #1e293b',
-            fontFamily: FONT_FAMILY,
-            fontSize: FONT_SIZE,
-            lineHeight: `${LINE_HEIGHT}px`,
-            color: '#334155',
-            userSelect: 'none' as const,
-            overflow: 'hidden',
-            flexShrink: 0,
-            minWidth: '52px',
-            cursor: 'pointer',
+            background: '#0c1222', borderRight: '1px solid #1e293b',
+            fontFamily: FONT_FAMILY, fontSize: FONT_SIZE, lineHeight: `${LINE_HEIGHT}px`,
+            userSelect: 'none' as const, overflow: 'hidden', flexShrink: 0,
+            minWidth: '52px', position: 'relative',
           }}
         >
-          {lines.map((_, i) => {
-            const hasBreakpoint = breakpointLines.has(i);
-            const isActive = i === activeLine;
-            const isError = errorLines.has(i);
-            const hasAddr = lineToAddr.has(i); // only instruction lines are clickable
-            return (
-              <div key={i} style={{
-                height: `${LINE_HEIGHT}px`,
-                display: 'flex', alignItems: 'center',
-                paddingLeft: '4px', paddingRight: '6px',
-                gap: '4px',
-              }}
-              onClick={() => {
-                if (hasAddr) {
-                  onToggleBreakpoint(lineToAddr.get(i)!);
-                }
-              }}
-              title={hasAddr ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${(lineToAddr.get(i) ?? 0).toString(16).toUpperCase().padStart(6, '0')}` : undefined}
-              >
-                {/* Breakpoint dot area */}
-                <span style={{
-                  width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  background: hasBreakpoint ? '#ef4444' : 'transparent',
-                  border: hasBreakpoint ? '1px solid #f87171' : (hasAddr ? '1px solid transparent' : 'none'),
-                  boxShadow: hasBreakpoint ? '0 0 4px rgba(239,68,68,0.5)' : 'none',
-                  transition: 'all 0.15s',
-                }} />
-                {/* Line number */}
-                <span style={{
-                  flex: 1, textAlign: 'right',
-                  color: isError ? '#f87171' : isActive ? '#fcd34d' : hasBreakpoint ? '#fca5a5' : '#4a5568',
-                  fontWeight: (isActive || isError) ? 700 : 400,
-                  fontSize: '0.72rem',
-                }}>
-                  {i + 1}
-                </span>
-              </div>
-            );
-          })}
+          <div style={{ paddingTop: PADDING_TOP, paddingBottom: PADDING_BOTTOM, transform: `translateY(-${scrollTop}px)` }}>
+            {lines.map((_, i) => {
+              const hasBreakpoint = breakpointLines.has(i);
+              const isActive = i === activeLine;
+              const isError = errorLines.has(i);
+              const addr = lineToAddr.get(i);
+              const hasAddr = addr !== undefined;
+              return (
+                <div key={i} className="gutter-line" style={{
+                  height: `${LINE_HEIGHT}px`, display: 'flex', alignItems: 'center',
+                  paddingLeft: '4px', paddingRight: '6px', gap: '4px',
+                  cursor: hasAddr ? 'pointer' : 'default',
+                }}
+                onClick={() => { if (hasAddr) onToggleBreakpoint(addr!); }}
+                title={hasAddr
+                  ? `Click to ${hasBreakpoint ? 'remove' : 'set'} breakpoint at 0x${h6(addr!)}`
+                  : status !== 'loaded' ? 'Assemble (Ctrl+Enter) to set breakpoints' : undefined}
+                >
+                  <span className={hasAddr && !hasBreakpoint ? 'bp-dot-area' : undefined} style={{
+                    width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: hasBreakpoint ? '#ef4444' : 'transparent',
+                    border: hasBreakpoint ? '1px solid #f87171' : (hasAddr ? '1px solid transparent' : 'none'),
+                    boxShadow: hasBreakpoint ? '0 0 4px rgba(239,68,68,0.5)' : 'none',
+                    transition: 'all 0.15s',
+                  }} />
+                  <span style={{
+                    flex: 1, textAlign: 'right',
+                    color: isError ? '#f87171' : isActive ? '#fcd34d' : hasBreakpoint ? '#fca5a5' : 'var(--text-dim)',
+                    fontWeight: (isActive || isError) ? 700 : 400,
+                    fontSize: '0.72rem',
+                  }}>
+                    {i + 1}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Code area with highlight overlay */}
-        <div style={{ flex: 1, position: 'relative' }}>
-          {/* Highlight layer — synced to textarea scroll via transform */}
-          <div
-            style={{
-              position: 'absolute',
-              top: 0, left: 0, right: 0, bottom: 0,
-              overflow: 'hidden',
-              pointerEvents: 'none',
-            }}
-          >
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+          <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
             <div style={{
-              paddingTop: `${PADDING_TOP}px`,
-              paddingLeft: '4px',
-              paddingRight: '4px',
+              paddingTop: `${PADDING_TOP}px`, paddingLeft: '4px', paddingRight: '4px',
               transform: `translateY(-${scrollTop}px)`,
             }}>
-            {lines.map((_, i) => {
-              const isActive = i === activeLine;
-              const isError = errorLines.has(i);
-              const isBp = breakpointLines.has(i);
-              return (
-                <div key={i} style={{
-                  height: `${LINE_HEIGHT}px`,
-                  borderRadius: (isActive || isError || isBp) ? '6px' : '0',
-                  border: isError
-                    ? '1px solid rgba(239, 68, 68, 0.3)'
-                    : isActive
-                    ? '1px solid rgba(250, 204, 21, 0.3)'
-                    : isBp
-                    ? '1px solid rgba(239, 68, 68, 0.15)'
-                    : '1px solid transparent',
-                  background: isBp && !isActive ? 'rgba(239, 68, 68, 0.06)' : undefined,
-                  marginLeft: '2px',
-                  marginRight: '2px',
-                  boxSizing: 'border-box',
-                  ...(isError
-                    ? { animation: 'errorPulse 1.5s ease-in-out infinite' }
-                    : isActive
-                    ? { animation: 'highlightPulse 1.5s ease-in-out infinite' }
-                    : {}),
-                }} />
-              );
-            })}
+              {lines.map((_, i) => {
+                const isActive = i === activeLine;
+                const isError = errorLines.has(i);
+                const isBp = breakpointLines.has(i);
+                return (
+                  <div key={i} style={{
+                    height: `${LINE_HEIGHT}px`,
+                    borderRadius: (isActive || isError || isBp) ? '6px' : '0',
+                    border: isError
+                      ? '1px solid rgba(239, 68, 68, 0.3)'
+                      : isActive
+                      ? '1px solid rgba(250, 204, 21, 0.3)'
+                      : isBp
+                      ? '1px solid rgba(239, 68, 68, 0.15)'
+                      : '1px solid transparent',
+                    background: isBp && !isActive ? 'rgba(239, 68, 68, 0.06)' : undefined,
+                    marginLeft: '2px', marginRight: '2px', boxSizing: 'border-box',
+                    ...(isError
+                      ? { animation: 'errorPulse 1.5s ease-in-out infinite' }
+                      : isActive
+                      ? { animation: 'highlightPulse 1.5s ease-in-out infinite' }
+                      : {}),
+                  }} />
+                );
+              })}
             </div>
           </div>
 
-          {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={code}
-            onChange={e => { onChange(e.target.value); setLastResult(null); }}
+            aria-label="Assembly source"
+            onChange={e => onChange(e.target.value)}
             onScroll={handleScroll}
             onKeyDown={e => {
-              // Ctrl+Enter to assemble
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 handleAssemble();
+              } else if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                // Tab indents; Shift+Tab still moves focus out of the editor.
+                e.preventDefault();
+                insertTab(e.currentTarget, onChange);
               }
             }}
             spellCheck={false}
             style={{
-              position: 'relative',
-              width: '100%',
-              height: '100%',
-              paddingTop: `${PADDING_TOP}px`,
-              paddingLeft: '10px',
-              paddingRight: '10px',
-              paddingBottom: '10px',
-              background: 'transparent',
-              color: '#e2e8f0',
-              border: 'none',
-              fontFamily: FONT_FAMILY,
-              fontSize: FONT_SIZE,
-              lineHeight: `${LINE_HEIGHT}px`,
-              resize: 'none',
-              outline: 'none',
-              whiteSpace: 'pre',
-              margin: 0,
-              boxSizing: 'border-box',
-              zIndex: 1,
+              position: 'relative', width: '100%', height: '100%',
+              paddingTop: `${PADDING_TOP}px`, paddingLeft: '10px', paddingRight: '10px',
+              paddingBottom: `${PADDING_BOTTOM}px`,
+              background: 'transparent', color: '#e2e8f0', border: 'none',
+              fontFamily: FONT_FAMILY, fontSize: FONT_SIZE, lineHeight: `${LINE_HEIGHT}px`,
+              resize: 'none', outline: 'none', whiteSpace: 'pre', margin: 0,
+              boxSizing: 'border-box', zIndex: 1, tabSize: TAB_STOP,
             }}
           />
         </div>
@@ -540,10 +499,12 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
 
       {/* Drag handle to resize editor vs output */}
       <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize editor"
         style={{
           height: 6, cursor: 'row-resize', flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          margin: '1px 0',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '1px 0',
         }}
         onMouseDown={(e) => {
           e.preventDefault();
@@ -551,8 +512,7 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
           const onMove = (ev: MouseEvent) => {
             if (!dragRef.current) return;
             const delta = ev.clientY - dragRef.current.startY;
-            const newFlex = Math.max(1, Math.min(8, dragRef.current.startFlex + delta / 60));
-            setEditorFlex(newFlex);
+            setEditorFlex(Math.max(1, Math.min(8, dragRef.current.startFlex + delta / 60)));
           };
           const onUp = () => {
             dragRef.current = null;
@@ -563,30 +523,23 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
           document.addEventListener('mouseup', onUp);
         }}
       >
-        <div style={{
-          width: 40, height: 3, borderRadius: 2,
-          background: 'var(--border-default, #1e2a42)',
-          transition: 'background 0.15s',
-        }} />
+        <div style={{ width: 40, height: 3, borderRadius: 2, background: 'var(--border-default)' }} />
       </div>
 
       {/* Error panel */}
-      {lastResult && lastResult.errors.length > 0 && (
-        <div style={{
+      {failed && (
+        <div role="alert" style={{
           marginTop: '6px', padding: '8px', background: '#1c1017',
           borderRadius: '6px', border: '1px solid #7f1d1d',
-          maxHeight: '80px', overflow: 'auto',
+          maxHeight: '96px', overflow: 'auto', flexShrink: 0, userSelect: 'text',
         }}>
-          {lastResult.errors.map((err, i) => (
+          {failed.errors.map((err, i) => (
             <div key={i} style={{
-              fontSize: '0.68rem', color: '#fca5a5', fontFamily: FONT_FAMILY,
-              padding: '2px 0',
-              display: 'flex', gap: '8px',
+              fontSize: '0.6875rem', color: '#fca5a5', fontFamily: FONT_FAMILY,
+              padding: '2px 0', display: 'flex', gap: '8px',
             }}>
               {err.line > 0 && (
-                <span style={{ color: '#f87171', fontWeight: 700, flexShrink: 0 }}>
-                  Line {err.line}:
-                </span>
+                <span style={{ color: '#f87171', fontWeight: 700, flexShrink: 0 }}>Line {err.line}:</span>
               )}
               <span>{err.message}</span>
             </div>
@@ -594,78 +547,75 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
         </div>
       )}
 
-      {/* Assembled output panel */}
-      {lastResult && lastResult.success && (
+      {/* The program in RAM */}
+      {loadedResult && loadedResult.success && (
         <div style={{ flex: 1, minHeight: '60px', overflow: 'auto', display: 'flex', flexDirection: 'column' as const }}>
-          <div
+          <button
             onClick={() => setShowBytes(!showBytes)}
+            aria-expanded={showBytes}
             style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              padding: '4px 8px', background: 'var(--bg-elevated, #0f172a)', borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer', userSelect: 'none' as const,
-              border: '1px solid var(--border-subtle, #1e293b)',
+              display: 'flex', alignItems: 'center', gap: '6px', textAlign: 'left',
+              padding: '4px 8px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)',
+              cursor: 'pointer', userSelect: 'none' as const, border: '1px solid var(--border-subtle)',
             }}
           >
-            <span style={{ fontSize: '0.62rem', color: 'var(--text-dim, #475569)', transition: 'transform 0.2s',
+            <span aria-hidden="true" style={{ fontSize: '0.6875rem', color: 'var(--text-dim)', transition: 'transform 0.2s',
               transform: showBytes ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-            <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)' }}>
-              Output
+            <span style={{ fontSize: '0.6875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              Program in RAM
             </span>
-            <span style={{ fontSize: '0.62rem', color: 'var(--text-dim, #475569)' }}>
-              {lastResult.size ?? lastResult.bytes?.length ?? 0}B
-              {(lastResult.labels?.size ?? 0) > 0 && ` · ${lastResult.labels.size} labels`}
+            <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+              {loadedResult.size ?? loadedResult.bytes?.length ?? 0} B
+              {(loadedResult.labels?.size ?? 0) > 0 && ` · ${loadedResult.labels.size} labels`}
+              {status === 'modified' && ' · differs from the editor'}
             </span>
-          </div>
+          </button>
 
           {showBytes && (
             <div style={{
-              marginTop: '3px', padding: '6px', background: 'var(--bg-base, #0c1222)',
-              borderRadius: 'var(--radius-sm, 4px)', border: '1px solid var(--border-subtle, #1e293b)',
+              marginTop: '3px', padding: '6px', background: 'var(--bg-base)',
+              borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)',
               flex: 1, overflow: 'auto',
             }}>
-              {/* Labels summary */}
-              {(lastResult.labels?.size ?? 0) > 0 && (
+              {(loadedResult.labels?.size ?? 0) > 0 && (
                 <div style={{
                   display: 'flex', flexWrap: 'wrap', gap: '8px',
-                  marginBottom: '6px', paddingBottom: '6px',
-                  borderBottom: '1px solid #1e293b',
+                  marginBottom: '6px', paddingBottom: '6px', borderBottom: '1px solid #1e293b',
                 }}>
-                  {Array.from(lastResult.labels?.entries() ?? []).map((entry: any) => { const [name, addr] = entry; return (
+                  {Array.from(loadedResult.labels.entries()).map(([name, addr]) => (
                     <span key={name} style={{
-                      fontSize: '0.65rem', fontFamily: FONT_FAMILY,
+                      fontSize: '0.6875rem', fontFamily: FONT_FAMILY,
                       padding: '1px 6px', background: '#1e293b', borderRadius: '3px',
                     }}>
                       <span style={{ color: '#c084fc' }}>{name}</span>
-                      <span style={{ color: '#475569' }}> = </span>
-                      <span style={{ color: '#94a3b8' }}>0x{addr.toString(16).padStart(6, '0').toUpperCase()} ({addr})</span>
+                      <span style={{ color: 'var(--text-dim)' }}> = </span>
+                      <span style={{ color: 'var(--text-secondary)' }}>0x{h6(addr)} ({addr})</span>
                     </span>
-                  ); })}
+                  ))}
                 </div>
               )}
-
-              {/* Disassembly listing */}
-              <DisassemblyView bytes={lastResult.bytes ?? []} addressToLine={lastResult.addressToLine ?? new Map()} labels={lastResult.labels ?? new Map()} currentAddress={currentAddress} />
+              <DisassemblyView bytes={loadedResult.bytes ?? []} labels={loadedResult.labels ?? new Map()} currentAddress={currentAddress} />
             </div>
           )}
         </div>
       )}
 
-      {/* Instruction reference */}
+      {/* Instruction reference (press ? for the full list) */}
       <div style={{
-        marginTop: '4px', padding: '6px 8px', background: 'var(--bg-elevated, #111628)',
-        borderRadius: 'var(--radius-sm, 4px)', fontSize: '0.58rem',
-        color: 'var(--text-muted, #718096)', fontFamily: 'var(--font-mono)',
+        marginTop: '4px', padding: '6px 8px', background: 'var(--bg-elevated)',
+        borderRadius: 'var(--radius-sm)', fontSize: '0.6875rem',
+        color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
         display: 'flex', flexWrap: 'wrap' as const, gap: '4px', flexShrink: 0,
-        border: '1px solid var(--border-subtle, #1e293b)',
+        border: '1px solid var(--border-subtle)',
       }}>
         {[
-          'ADD r,r', 'SHR r,r', 'SHL r,r', 'NOT r', 'AND r,r', 'OR r,r', 'XOR r,r', 'CMP r,r',
-          'LOAD r,[addr]', 'STORE r,[addr]', 'DATA r,val',
-          'JMP lbl', 'JC lbl', 'JA lbl', 'JE lbl', 'JMPR r', 'OUT r', 'IN r', 'HALT',
+          'ADD r,r', 'SUB r,r', 'MUL r,r', 'DIV r,r', 'CMP r,r', 'MOV r,r', 'AND r,r', 'OR r,r', 'XOR r,r',
+          'NOT r', 'SHL r', 'SHR r', 'DATA r,val', 'LOAD r,addr', 'STORE r,addr', 'LDRI r,r', 'STRI r,r',
+          'PUSH r', 'POP r', 'JMP lbl', 'JE/JA/JC/JZ/JNZ lbl', 'CALL lbl', 'RET', 'OUT r', 'IN r', 'HALT', '? = all',
         ].map(instr => (
           <span key={instr} style={{
-            padding: '1px 5px', background: 'var(--bg-hover, #161d33)', borderRadius: 3,
-            border: '1px solid var(--border-subtle, #1e293b)',
+            padding: '1px 5px', background: 'var(--bg-hover)', borderRadius: 3,
+            border: '1px solid var(--border-subtle)',
           }}>
             {instr}
           </span>
@@ -673,4 +623,13 @@ export default function CodeEditor({ code, onChange, currentAddress, onLoadBytes
       </div>
     </div>
   );
+}
+
+function badge(color: string): React.CSSProperties {
+  return {
+    fontSize: '0.6875rem', fontWeight: 700, color,
+    padding: '1px 6px', borderRadius: 3,
+    border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
+    background: `color-mix(in srgb, ${color} 10%, transparent)`,
+  };
 }
