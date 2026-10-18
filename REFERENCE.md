@@ -107,6 +107,8 @@ A 32-bit access whose four bytes would run past 0x3FFFFF (an address of 0x3FFFFD
 | 0x13 | PUSH | rA | SP −= 4, then RAM[SP..SP+3] = rA |
 | 0x14 | POP | rA | rA = RAM[SP..SP+3], then SP += 4 |
 
+PUSH, POP, CALL and RET do not fault at the edges of memory: SP wraps within the 22-bit address space, and each byte's address wraps on its own. Popping more than was pushed reads from VRAM (0x3C0000 and up), so keep pushes and pops balanced.
+
 ### Jumps (9)
 
 | Opcode | Mnemonic | Operands | Description |

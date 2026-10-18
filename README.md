@@ -54,14 +54,18 @@ npm run electron:build:win
 
 The installer (.exe) will be in `web/release/`.
 
-### Menu Shortcuts (Electron)
-| Action | Shortcut |
-|--------|----------|
-| Step | F10 |
-| Step Back | F9 |
-| Run | F5 |
-| Pause | F6 |
-| Reset | Ctrl+Shift+R |
+### Keyboard Shortcuts
+| Action | Desktop app | Desktop and browser |
+|--------|-------------|---------------------|
+| Step | F10 | S |
+| Step Back | F9 | B |
+| Run | F5 | R |
+| Pause | F6 | P or Esc |
+| Reset CPU (keeps RAM) | F8 | — |
+| Assemble and load | — | Ctrl+Enter (in the editor) |
+| Quick reference | — | ? |
+
+The single-letter keys work when the editor and other text fields don't have focus, and are ignored with Ctrl, Alt or Cmd held. Wipe RAM is in the Simulation menu and the toolbar.
 
 ## Full Setup (with Rust/WASM)
 
