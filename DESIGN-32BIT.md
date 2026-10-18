@@ -1,5 +1,13 @@
 # GateStack v2.0 — 32-bit Architecture Design Document
 
+> **Historical document.** This is the plan written before the 32-bit redesign was built. [REFERENCE.md](REFERENCE.md) is the specification; where the two disagree, REFERENCE.md is right. The machine that was built differs from this plan in these ways:
+>
+> - **Memory**: 4 MB with 22-bit addresses (not 1 MB / 20-bit). VRAM is double-buffered: back buffer 0x3C0000, front buffer 0x3D0000, palette 0x3E0000 (programmable, not hardcoded), vsync at 0x3FFFFF, SP starts at 0x3BFFFF.
+> - **Instructions**: 45, including JZ/JNZ, LOAD32/STORE32/LDRI32/STRI32, IDIV/IMOD, FPMUL (8.8) and FPMUL16 (16.16, added 2026-10-18). The open questions in section 7 have all been decided; see REFERENCE.md.
+> - **Fixed point**: the Mandelbrot samples use 8.8 (FPMUL), plus a 16.16 sample using FPMUL16.
+> - **Engines**: WASM is the default; the JS engine is the fallback, and both must give identical results.
+> - **CMP** sets the flags as for rA − rB, and illegal opcodes or 32-bit accesses past the end of RAM halt with a fault (decided 2026-10-18).
+
 ## 1. Project Overview
 
 GateStack is an educational computer simulator with a custom ISA, assembler, and visual debugger. v1.0 is a 16-bit CPU with 64KB RAM. v2.0 upgrades to 32-bit for deeper Mandelbrot zoom, richer graphics, and a more capable platform.
