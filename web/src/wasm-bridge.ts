@@ -66,6 +66,7 @@ export const OP = {
   IDIV:    0x29,
   IMOD:    0x2A,
   FPMUL:   0x2B,  // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
+  FPMUL16: 0x2C,
 } as const;
 
 // ── Instruction size lookup ──────────────────────────────────────────────

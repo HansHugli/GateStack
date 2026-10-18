@@ -53,6 +53,7 @@ const MNEMONICS: Record<string, { opcode: number; type: string }> = {
   IDIV:    { opcode: OP.IDIV,    type: 'alu' },
   IMOD:    { opcode: OP.IMOD,    type: 'alu' },
   FPMUL:   { opcode: OP.FPMUL,   type: 'alu' },
+  FPMUL16: { opcode: OP.FPMUL16, type: 'alu' },
   SHR:     { opcode: OP.SHR,     type: 'alu' },
   SHL:     { opcode: OP.SHL,     type: 'alu' },
   SHR8:    { opcode: OP.SHR8,    type: 'alu' },
