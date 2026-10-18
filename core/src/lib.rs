@@ -80,8 +80,9 @@ const STRI32:  u8 = 0x28;
 const IDIV:    u8 = 0x29;
 const IMOD:    u8 = 0x2A;
 const FPMUL:   u8 = 0x2B;  // Signed 8.8 fixed-point multiply
+const FPMUL16: u8 = 0x2C;  // Signed 16.16 fixed-point multiply
 /// Every opcode above this one is undefined and faults.
-const LAST_OPCODE: u8 = FPMUL;
+const LAST_OPCODE: u8 = FPMUL16;
 
 #[wasm_bindgen]
 pub struct WasmCpu {
@@ -518,11 +519,11 @@ impl WasmCpu {
                 }
             }
 
-            // ── ALU (0x01-0x0F, 0x17, 0x21, 0x22, 0x29-0x2B) ──
+            // ── ALU (0x01-0x0F, 0x17, 0x21, 0x22, 0x29-0x2C) ──
             if (opcode >= ADD && opcode <= SHR8) || opcode == SHL8
                 || opcode == SHRN || opcode == SHLN
                 || opcode == IDIV || opcode == IMOD
-                || opcode == FPMUL {
+                || opcode == FPMUL || opcode == FPMUL16 {
                 let a = *r.add(ra);
                 let b = *r.add(rb);
                 let mut result: u32 = 0;
@@ -549,6 +550,11 @@ impl WasmCpu {
                         // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
                         let prod = (a as i32 as i64) * (b as i32 as i64);
                         result = (prod >> 8) as u32;
+                    }
+                    FPMUL16 => {
+                        // Signed 16.16 fixed-point multiply: rA = (rA * rB) >> 16
+                        let prod = (a as i32 as i64) * (b as i32 as i64);
+                        result = (prod >> 16) as u32;
                     }
                     SHR  => { result = a >> 1; carry = (a & 1) != 0; }
                     SHL  => { let s = (a as u64) << 1; result = s as u32; carry = s > 0xFFFF_FFFF; }

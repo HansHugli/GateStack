@@ -1,6 +1,6 @@
 // Engine behaviour tests (public API only). Ported from the 2026-10-18 review
 // tests and updated to Hans's decisions: CMP compares like rA − rB, faults halt
-// with a message, IAR and SP are 22-bit.
+// with a message, FPMUL16 is 16.16, IAR and SP are 22-bit.
 use gatestack_core::WasmCpu;
 
 // ── Tiny encoder ────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ fn cpu_with(p: &[u8]) -> WasmCpu { let mut c = WasmCpu::new(); c.load_program(p)
 fn flags(c: &WasmCpu) -> (bool, bool, bool, bool) { (c.get_carry(), c.get_zero(), c.get_a_larger(), c.get_equal()) }
 
 const ADD: u8 = 0x01; const SUB: u8 = 0x02; const SHL8: u8 = 0x17; const CMP: u8 = 0x0C;
-const FPMUL: u8 = 0x2B;
+const FPMUL: u8 = 0x2B; const FPMUL16: u8 = 0x2C;
 const STRI: u8 = 0x16; const STRI32: u8 = 0x28; const LDRI32: u8 = 0x27;
 const LOAD32: u8 = 0x25; const STORE32: u8 = 0x26;
 const PUSH: u8 = 0x13; const POP: u8 = 0x14; const IN: u8 = 0x20; const OUT: u8 = 0x1F;
@@ -249,6 +249,34 @@ fn fpmul_is_signed_8_8_floor() {
     c.run(20);
     assert_eq!(c.get_register(0) as i32, -768);
     assert_eq!(c.get_register(2) as i32, -1);
+}
+
+fn fpmul16(a: i32, b: i32) -> (u32, (bool, bool, bool, bool)) {
+    let mut c = cpu_with(&prog(&[data(0, a as u32), data(1, b as u32), rr(FPMUL16, 0, 1), halt()]));
+    c.run(10);
+    assert!(c.is_halted() && c.get_fault().is_empty());
+    (c.get_register(0), flags(&c))
+}
+
+#[test]
+fn fpmul16_is_signed_16_16() {
+    let one = 1 << 16;
+    assert_eq!(fpmul16(3 * one / 2, 2 * one).0, 3 * one as u32);          // 1.5 * 2 = 3
+    assert_eq!(fpmul16(-3 * one / 2, 2 * one).0 as i32, -3 * one);        // -1.5 * 2 = -3
+    assert_eq!(fpmul16(-one, -one).0 as i32, one);                        // -1 * -1 = 1
+    assert_eq!(fpmul16(-1, 1).0 as i32, -1);                              // floors (arithmetic shift)
+    assert_eq!(fpmul16(1, 1).0, 0);                                       // underflow to 0
+    assert_eq!(fpmul16(one / 2, one / 2).0, (one / 4) as u32);            // 0.5 * 0.5
+    // overflow: (2^31-1)^2 >> 16, truncated to 32 bits
+    let big = ((i32::MAX as i64 * i32::MAX as i64) >> 16) as u32;
+    assert_eq!(fpmul16(i32::MAX, i32::MAX).0, big);
+    let neg = ((i32::MIN as i64 * i32::MAX as i64) >> 16) as u32;
+    assert_eq!(fpmul16(i32::MIN, i32::MAX).0, neg);
+    assert_eq!(fpmul16(i32::MIN, i32::MIN).0, 0);                         // 2^62 >> 16 = 2^46: low 32 bits 0
+    // flags exactly as FPMUL: carry clear, A>B / E unsigned on the inputs, Z on the result
+    assert_eq!(fpmul16(1, 1).1, (false, true, false, true));
+    assert_eq!(fpmul16(-1, 1).1, (false, false, true, false));
+    assert_eq!(fpmul16(i32::MIN, i32::MIN).1, (false, true, false, true));
 }
 
 #[test]

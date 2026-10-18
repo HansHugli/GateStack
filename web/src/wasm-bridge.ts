@@ -18,7 +18,7 @@
 //   - 32-bit registers (u32), 4MB RAM, 22-bit address space
 //   - 24-bit addresses in instructions, 32-bit immediates in DATA
 //   - New opcodes: SHRN, SHLN, JZ, JNZ, LOAD32, STORE32, LDRI32, STRI32, IDIV, IMOD,
-//     FPMUL (8.8)
+//     FPMUL (8.8), FPMUL16 (16.16)
 //   - Programmable palette at 0x3E0000 (256 × 4 bytes), updated on vsync
 //   - Instruction sizes: DATA=6, LOAD/STORE/LOAD32/STORE32=5, jumps=4, rest=2
 //   - Faults: an undefined opcode, or a 32-bit access running past 0x3FFFFF,
@@ -73,10 +73,11 @@ export const OP = {
   IDIV:    0x29,
   IMOD:    0x2A,
   FPMUL:   0x2B,  // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
+  FPMUL16: 0x2C,
 } as const;
 
 /** Every opcode above this one is undefined and faults. */
-const LAST_OPCODE = OP.FPMUL;
+const LAST_OPCODE = OP.FPMUL16;
 
 // ── Instruction size lookup ──────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ export function instrSize(opcode: number): number {
     case OP.LOAD32: case OP.STORE32:                           return 5; // opcode + reg + addr24
     case OP.JMP: case OP.JC: case OP.JA: case OP.JE:          return 4; // opcode + addr24
     case OP.JZ: case OP.JNZ: case OP.CALL:                    return 4;
-    default:                                                   return 2; // opcode + reg byte
+    default:                                                   return 2; // opcode + reg byte (FPMUL16 too)
   }
 }
 
@@ -107,7 +108,7 @@ export function isAluOpcode(opcode: number): boolean {
   return (opcode >= OP.ADD && opcode <= OP.SHR8) || opcode === OP.SHL8
       || opcode === OP.SHRN || opcode === OP.SHLN
       || opcode === OP.IDIV || opcode === OP.IMOD
-      || opcode === OP.FPMUL;
+      || opcode === OP.FPMUL || opcode === OP.FPMUL16;
 }
 
 // ── Memory map constants ─────────────────────────────────────────────────
@@ -745,6 +746,12 @@ export class MockComputer implements IComputer {
             // Signed 8.8 fixed-point multiply: rA = (rA * rB) >> 8
             const prod = BigInt(a | 0) * BigInt(b | 0);  // signed 64-bit product
             result = Number((prod >> 8n) & 0xFFFFFFFFn) >>> 0;
+            break;
+          }
+          case OP.FPMUL16: {
+            // Signed 16.16 fixed-point multiply: rA = (rA * rB) >> 16
+            const prod = BigInt(a | 0) * BigInt(b | 0);
+            result = Number((prod >> 16n) & 0xFFFFFFFFn) >>> 0;
             break;
           }
         }
