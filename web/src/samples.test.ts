@@ -154,11 +154,13 @@ describe('video samples', () => {
     expect(c.isHalted()).toBe(true);
     const fault = (c as unknown as { getFault?: () => string | null }).getFault?.() ?? null;
     expect(fault).toBeNull();
-    // Front buffer after the last vsync: about a quarter of the pixels are inside (colour 0).
-    const vram = c.getMemory(0x3D0000, 65536);
+    // runToHalt skips vsync, so the picture is in the back buffer. About a quarter of the
+    // pixels are inside the set (colour 0); the rest use the rainbow colours 16–255.
+    const vram = c.getMemory(0x3C0000, 65536);
     const inside = vram.filter(v => v === 0).length;
     expect(inside).toBeGreaterThan(10000);
     expect(inside).toBeLessThan(25000);
+    expect(vram.every(v => v === 0 || (v >= 16 && v <= 255))).toBe(true);
   });
 
   it('host demos are marked as such', () => {
