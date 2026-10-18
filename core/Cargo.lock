@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "gatestack-core"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",

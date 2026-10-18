@@ -1,6 +1,6 @@
 {
   "name": "gatestack",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "private": true,
   "description": "GateStack: an educational 32-bit computer simulator (Rust/WASM core, React UI, Electron)",
   "scripts": {
