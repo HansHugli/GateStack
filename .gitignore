@@ -23,3 +23,6 @@ Thumbs.db
 *.snap
 web/main.mjs
 web/preload.cjs
+
+# Root release tooling
+/node_modules/

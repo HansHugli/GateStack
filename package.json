@@ -1,0 +1,19 @@
+{
+  "name": "gatestack",
+  "version": "4.0.0",
+  "private": true,
+  "description": "GateStack: an educational 32-bit computer simulator (Rust/WASM core, React UI, Electron)",
+  "scripts": {
+    "release": "commit-and-tag-version",
+    "release:first": "commit-and-tag-version --first-release",
+    "release:minor": "commit-and-tag-version --release-as minor",
+    "release:major": "commit-and-tag-version --release-as major",
+    "release:dry": "commit-and-tag-version --dry-run",
+    "test": "cargo test --manifest-path core/Cargo.toml && cd web && npm run build:wasm && npm test && npx tsc --noEmit",
+    "build": "cd web && npm run build:wasm && npm run electron:build:win",
+    "ship": "npm run release && npm run build && git push --follow-tags origin main"
+  },
+  "devDependencies": {
+    "commit-and-tag-version": "^13.3.0"
+  }
+}
