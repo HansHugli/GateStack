@@ -530,6 +530,111 @@ zi_halt:
         HALT`;
 }
 
+// ── Mandelbrot in 16.16 fixed point (FPMUL16) ───────────────────────────
+// Constants (1.0 = 65536):
+//   re_min = -2.0  * 65536 = -131072
+//   im_min = -1.3  * 65536 = -85196.8  -> -85197
+//   step   =  2.6 / 256 * 65536 = 665.6 -> 666  (same on both axes)
+//   escape =  4.0  * 65536 = 262144
+// Largest intermediate: |z| <= 2 before a step, so |z|^2 + |c| < 6.1 and
+// zr^2 + zi^2 < 37.3 * 65536 = 2.4M, well inside 32 bits.
+function generateMandelbrot1616(): string {
+  return `; Mandelbrot 16.16 — FPMUL16 fixed point, 256×256, 8bpp
+; The same set as "Mandelbrot", computed with 16 fraction bits instead of 8.
+; In 8.8 a pixel step of 2.6/256 rounds up to 3/256 (15% too wide) and every
+; value is coarse; in 16.16 the step is 666/65536, so the edge of the set
+; shows much finer detail. Up to 64 iterations per pixel.
+;
+; FPMUL16 rA, rB:  rA = (rA × rB) >> 16, signed 16.16 (1.0 = 65536)
+;   re_min = -2.0      → -131072
+;   im_min = -1.3      → -85197
+;   step   = 2.6 / 256 → 666     (both axes)
+;   escape = 4.0       → 262144  (|z|² > 4 means the point escapes)
+;
+; R4=px  R5=py  R6=cr  R7=ci  R8=zr  R9=zi  R10=iter  R11=scratch
+; R12=back buffer  R13=256  R14=1  R15=step
+; Best at speed MAX; each row is shown as soon as it is drawn.
+
+        DATA R12, 0x3C0000      ; back buffer
+        DATA R13, 256
+        DATA R14, 1
+        DATA R15, 666           ; step
+        DATA R5, 0              ; py = 0
+        DATA R7, -85197         ; ci = im_min
+
+m16_row:
+        DATA R4, 0              ; px = 0
+        DATA R6, -131072        ; cr = re_min
+
+m16_pixel:
+        DATA R8, 0              ; zr = 0
+        DATA R9, 0              ; zi = 0
+        DATA R10, 0             ; iter = 0
+
+m16_iter:
+        MOV  R2, R8
+        FPMUL16 R2, R8          ; R2 = zr²
+        MOV  R3, R9
+        FPMUL16 R3, R9          ; R3 = zi²
+        MOV  R0, R2
+        ADD  R0, R3             ; R0 = |z|²
+        DATA R11, 262144        ; 4.0
+        CMP  R0, R11
+        JA   m16_out            ; escaped
+        ADD  R10, R14
+        DATA R11, 64
+        CMP  R10, R11
+        JE   m16_in             ; still bounded after 64 iterations
+        ; zi = 2·zr·zi + ci
+        MOV  R0, R8
+        FPMUL16 R0, R9
+        SHL  R0
+        ADD  R0, R7
+        ; zr = zr² − zi² + cr
+        SUB  R2, R3
+        ADD  R2, R6
+        MOV  R8, R2
+        MOV  R9, R0
+        JMP  m16_iter
+
+m16_out:
+        ; colour 16..255: the rainbow part of the default palette
+        MOV  R0, R10
+        DATA R11, 7
+        MUL  R0, R11
+        DATA R11, 240
+        MOD  R0, R11
+        DATA R11, 16
+        ADD  R0, R11
+        JMP  m16_plot
+
+m16_in: DATA R0, 0              ; inside the set: colour 0
+
+m16_plot:
+        MOV  R1, R5
+        MUL  R1, R13            ; py * 256
+        ADD  R1, R4             ; + px
+        ADD  R1, R12            ; + back buffer
+        STRI R0, R1
+        ADD  R4, R14
+        ADD  R6, R15            ; cr += step
+        CMP  R4, R13
+        JE   m16_row_done
+        JMP  m16_pixel
+
+m16_row_done:
+        DATA R0, 0
+        STORE R0, 0x3FFFFF      ; vsync: show the rows drawn so far
+        ADD  R5, R14
+        ADD  R7, R15            ; ci += step
+        CMP  R5, R13
+        JE   m16_done
+        JMP  m16_row
+
+m16_done:
+        HALT`;
+}
+
 // ── Shared console print routines ───────────────────────────────────────
 // Pasted into the samples that print numbers. They print every 32-bit value
 // in full: unsigned 0..4294967295 (10 digits), or signed for the calculator.
@@ -1433,6 +1538,11 @@ ffz_h:  POP  R3
         HALT`,
     bytes: [], expect: 'Fast Mandelbrot using FPMUL opcode',
   },
+  mandelbrot_1616: {
+    name: 'Mandelbrot 16.16', desc: 'FPMUL16 fixed point, finer detail',
+    code: generateMandelbrot1616(),
+    bytes: [], expect: 'Mandelbrot set in 16.16 fixed point',
+  },
   fractal_zoom: {
     name: '🎬 Fractal Zoom (host demo)', desc: 'JavaScript, not the CPU',
     code: `; Fractal Zoom — a HOST demo, not a program for this CPU
@@ -1443,7 +1553,8 @@ ffz_h:  POP  R3
 ;
 ; Target: -0.7453 + 0.1127i (Seahorse Valley)
 ; About 490 frames of zoom (3.5% per frame), then colour cycling.
-; For fractals computed by the CPU see Mandelbrot and Fractal Fast.
+; For fractals computed by the CPU see Mandelbrot, Fractal Fast and
+; Mandelbrot 16.16.
 HALT`,
     bytes: [], expect: 'Host JavaScript zoom (the CPU is idle)',
   },
@@ -1823,7 +1934,7 @@ export const SAMPLE_CATEGORIES: Array<{ label: string; icon: string; keys: strin
   { label: 'Arithmetic',      icon: '📘', keys: ['multiply', 'divide', 'power', 'factorial', 'gcd', 'minmax'] },
   { label: 'Console I/O',     icon: '📙', keys: ['hello', 'echo', 'adder', 'calc', 'fibonacci', 'primes'] },
   { label: 'Data Structures',  icon: '📕', keys: ['stack', 'sort', 'matrix'] },
-  { label: 'Video',           icon: '📺', keys: ['video', 'mandelbrot', 'mandelbrot_anim', 'fractal_fast', 'fractal_zoom'] },
+  { label: 'Video',           icon: '📺', keys: ['video', 'mandelbrot', 'mandelbrot_1616', 'mandelbrot_anim', 'fractal_fast', 'fractal_zoom'] },
 ];
 
 /** Samples drawn by JavaScript on the host instead of the simulated CPU. */
