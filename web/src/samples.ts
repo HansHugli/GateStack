@@ -227,8 +227,9 @@ db_dn:  POP  R8
 
 // ── Mandelbrot Zoom + Color Cycling Animation ──────────────────────────
 function generateMandelbrotAnim(): string {
-  return `; Mandelbrot Zoom + Color Cycling (v2.0 optimized)
-; Inlined fpmul for reduced overhead
+  return `; Mandelbrot Zoom + Color Cycling (v2.0)
+; Software 8.8 multiply in a subroutine (fp_inline_mul, called with CALL);
+; "Fractal Fast" does the same zoom with the FPMUL instruction.
 ; Back buffer at 0x3C0000, 8bpp, vsync at 0x3FFFFF
 ; Best at Ludicrous speed!
 ;
@@ -266,7 +267,7 @@ do_zoom:
         JMP  main_loop
 
 ; ══════════════════════════════════════════
-; render_fractal — inlined fpmul, cardioid bailout
+; render_fractal — one frame, software fixed-point multiply
 ; ══════════════════════════════════════════
 render_fractal:
         PUSH R2
@@ -284,13 +285,13 @@ rf_xloop:
         DATA R10, 0
 
 rf_iter:
-        ; zr² (inline)
+        ; zr²
         MOV  R0, R8
         MOV  R1, R8
         CALL fp_inline_mul
         MOV  R2, R0
 
-        ; zi² (inline)
+        ; zi²
         MOV  R0, R9
         MOV  R1, R9
         CALL fp_inline_mul
@@ -307,7 +308,7 @@ rf_iter:
         CMP  R10, R11
         JE   rf_in
 
-        ; new_zi = 2*zr*zi + ci (inline)
+        ; new_zi = 2*zr*zi + ci
         MOV  R0, R8
         MOV  R1, R9
         CALL fp_inline_mul
@@ -374,7 +375,6 @@ rf_done:
 ; Preserves R2, R3 via PUSH/POP
 ; ══════════════════════════════════════════
 fp_inline_mul:
-fpmul:
         PUSH R2
         PUSH R3
         DATA R2, 0           ; sign flag
@@ -530,16 +530,186 @@ zi_halt:
         HALT`;
 }
 
-// ── Mandelbrot assembly is inlined in SAMPLE_PROGRAMS below ──────────────
-// Uses signed 8.8 fixed-point: 1.0 = 256, -2.0 = 65024 (0xFE00 unsigned)
-// MULH instruction gives high 32 bits of 64-bit unsigned multiply
-// Pre-computed constants:
-//   RE_MIN  = (-2.0  × 256) & 0xFFFF = 65024   (0xFE00)
-//   RE_STEP = round(2.7/256 × 256)   = 3
-//   IM_MIN  = (-1.35 × 256) & 0xFFFF = 65191   (0xFEA7)
-//   IM_STEP = round(2.7/256 × 256)   = 3
-//   ESCAPE  = 4.0 × 256              = 1024
-//   MAX_ITER                          = 16
+// ── Mandelbrot in 16.16 fixed point (FPMUL16) ───────────────────────────
+// Constants (1.0 = 65536):
+//   re_min = -2.0  * 65536 = -131072
+//   im_min = -1.3  * 65536 = -85196.8  -> -85197
+//   step   =  2.6 / 256 * 65536 = 665.6 -> 666  (same on both axes)
+//   escape =  4.0  * 65536 = 262144
+// Largest intermediate: |z| <= 2 before a step, so |z|^2 + |c| < 6.1 and
+// zr^2 + zi^2 < 37.3 * 65536 = 2.4M, well inside 32 bits.
+function generateMandelbrot1616(): string {
+  return `; Mandelbrot 16.16 — FPMUL16 fixed point, 256×256, 8bpp
+; The same set as "Mandelbrot", computed with 16 fraction bits instead of 8.
+; In 8.8 a pixel step of 2.6/256 rounds up to 3/256 (15% too wide) and every
+; value is coarse; in 16.16 the step is 666/65536, so the edge of the set
+; shows much finer detail. Up to 64 iterations per pixel.
+;
+; FPMUL16 rA, rB:  rA = (rA × rB) >> 16, signed 16.16 (1.0 = 65536)
+;   re_min = -2.0      → -131072
+;   im_min = -1.3      → -85197
+;   step   = 2.6 / 256 → 666     (both axes)
+;   escape = 4.0       → 262144  (|z|² > 4 means the point escapes)
+;
+; R4=px  R5=py  R6=cr  R7=ci  R8=zr  R9=zi  R10=iter  R11=scratch
+; R12=back buffer  R13=256  R14=1  R15=step
+; Best at speed MAX; each row is shown as soon as it is drawn.
+
+        DATA R12, 0x3C0000      ; back buffer
+        DATA R13, 256
+        DATA R14, 1
+        DATA R15, 666           ; step
+        DATA R5, 0              ; py = 0
+        DATA R7, -85197         ; ci = im_min
+
+m16_row:
+        DATA R4, 0              ; px = 0
+        DATA R6, -131072        ; cr = re_min
+
+m16_pixel:
+        DATA R8, 0              ; zr = 0
+        DATA R9, 0              ; zi = 0
+        DATA R10, 0             ; iter = 0
+
+m16_iter:
+        MOV  R2, R8
+        FPMUL16 R2, R8          ; R2 = zr²
+        MOV  R3, R9
+        FPMUL16 R3, R9          ; R3 = zi²
+        MOV  R0, R2
+        ADD  R0, R3             ; R0 = |z|²
+        DATA R11, 262144        ; 4.0
+        CMP  R0, R11
+        JA   m16_out            ; escaped
+        ADD  R10, R14
+        DATA R11, 64
+        CMP  R10, R11
+        JE   m16_in             ; still bounded after 64 iterations
+        ; zi = 2·zr·zi + ci
+        MOV  R0, R8
+        FPMUL16 R0, R9
+        SHL  R0
+        ADD  R0, R7
+        ; zr = zr² − zi² + cr
+        SUB  R2, R3
+        ADD  R2, R6
+        MOV  R8, R2
+        MOV  R9, R0
+        JMP  m16_iter
+
+m16_out:
+        ; colour 16..255: the rainbow part of the default palette
+        MOV  R0, R10
+        DATA R11, 7
+        MUL  R0, R11
+        DATA R11, 240
+        MOD  R0, R11
+        DATA R11, 16
+        ADD  R0, R11
+        JMP  m16_plot
+
+m16_in: DATA R0, 0              ; inside the set: colour 0
+
+m16_plot:
+        MOV  R1, R5
+        MUL  R1, R13            ; py * 256
+        ADD  R1, R4             ; + px
+        ADD  R1, R12            ; + back buffer
+        STRI R0, R1
+        ADD  R4, R14
+        ADD  R6, R15            ; cr += step
+        CMP  R4, R13
+        JE   m16_row_done
+        JMP  m16_pixel
+
+m16_row_done:
+        DATA R0, 0
+        STORE R0, 0x3FFFFF      ; vsync: show the rows drawn so far
+        ADD  R5, R14
+        ADD  R7, R15            ; ci += step
+        CMP  R5, R13
+        JE   m16_done
+        JMP  m16_row
+
+m16_done:
+        HALT`;
+}
+
+// ── Shared console print routines ───────────────────────────────────────
+// Pasted into the samples that print numbers. They print every 32-bit value
+// in full: unsigned 0..4294967295 (10 digits), or signed for the calculator.
+
+/** print_u32: print R0 as an unsigned decimal. Keeps R1..R4. */
+function printU32(newline: boolean): string {
+  return `; ── print_u32: print R0 as unsigned decimal (0..4294967295)${newline ? ' + newline' : ''} ──
+; Divides by 1000000000, 100000000, ... 10 and skips leading zeros.
+print_u32:
+        PUSH R1
+        PUSH R2
+        PUSH R3
+        PUSH R4
+        DATA R3, 0              ; 1 once a digit has been printed
+        DATA R1, 1000000000     ; current power of ten
+        DATA R4, 10
+pr_loop:
+        PUSH R0
+        DIV  R0, R1             ; digit = R0 / power
+        DATA R2, 0
+        CMP  R0, R2
+        JA   pr_show            ; non-zero digit
+        CMP  R3, R2
+        JA   pr_show            ; zero after an earlier digit
+        JMP  pr_skip            ; leading zero
+pr_show:
+        DATA R3, 1
+        DATA R2, 48             ; '0'
+        ADD  R0, R2
+        OUT  R0
+pr_skip:
+        POP  R0
+        MOD  R0, R1             ; R0 = R0 mod power
+        DIV  R1, R4             ; next power of ten
+        DATA R2, 1
+        CMP  R1, R2
+        JA   pr_loop            ; until the power is 1
+        DATA R2, 48             ; ones digit: always printed
+        ADD  R0, R2
+        OUT  R0
+${newline ? `        DATA R0, 10
+        OUT  R0
+` : ''}        POP  R4
+        POP  R3
+        POP  R2
+        POP  R1
+        RET`;
+}
+
+/** print_r0: print R0 as a signed decimal + newline (uses print_u32). */
+const PRINT_S32 = `; ── print_r0: print R0 as signed decimal (-2147483648..2147483647) + newline ──
+print_r0:
+        PUSH R1
+        PUSH R2
+        MOV  R1, R0
+        DATA R2, 0x80000000
+        AND  R1, R2             ; sign bit
+        DATA R2, 0
+        CMP  R1, R2
+        JE   ps_pos
+        DATA R1, 45             ; '-'
+        OUT  R1
+        NOT  R0                 ; R0 = -R0 (two's complement)
+        DATA R1, 1
+        ADD  R0, R1
+ps_pos: POP  R2
+        POP  R1
+        CALL print_u32
+        RET
+
+${printU32(true)}`;
+
+/** print_r0 as an alias of print_u32, so the samples read the same as before. */
+const PRINT_U32_NL = `print_r0:
+${printU32(true)}`;
 
 export const SAMPLE_PROGRAMS: Record<string, SampleProgram> = {
   add: {
@@ -565,9 +735,10 @@ done:   HALT`,
     bytes: [], expect: 'R0 = 10',
   },
   fibonacci: {
-    name: 'Fibonacci', desc: 'Print 1..46368',
-    code: `; Fibonacci: print each number to console
-; With 32-bit we can go much higher!
+    name: 'Fibonacci', desc: 'Print 1..2971215073',
+    code: `; Fibonacci: print each number to the console
+; Stops before the sum overflows 32 bits: the last number printed is
+; 2971215073, the 47th Fibonacci number (the 48th needs 33 bits).
 ; Uses CALL/RET for the print subroutine
         DATA R0, 1      ; current
         DATA R1, 0      ; previous
@@ -594,47 +765,8 @@ ok:     ; Shift: prev=current, current=new
         JMP  loop
 done:   HALT
 
-; ── Print R0 as decimal + newline ──
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 10000
-        CALL pr_dig
-        DATA R1, 1000
-        CALL pr_dig
-        DATA R1, 100
-        CALL pr_dig
-        DATA R1, 10
-        CALL pr_dig
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-pr_dig: PUSH R0
-        DIV  R0, R1
-        DATA R2, 0
-        CMP  R0, R2
-        JA   pd_s
-        CMP  R3, R2
-        JA   pd_s
-        POP  R0
-        MOD  R0, R1
-        RET
-pd_s:   DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
-    bytes: [], expect: 'Fibonacci sequence',
+${PRINT_U32_NL}`,
+    bytes: [], expect: '1 1 2 3 5 8 … 1836311903 2971215073',
   },
   hello: {
     name: 'Hello', desc: '"Hello World!"',
@@ -677,48 +809,7 @@ pd_s:   DATA R3, 1
         CALL print_r0
         HALT
 
-; ── Print R0 as decimal + newline ──
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 10000
-        CALL pr_dig
-        DATA R1, 1000
-        CALL pr_dig
-        DATA R1, 100
-        CALL pr_dig
-        DATA R1, 10
-        CALL pr_dig
-        ; Ones: always print
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-pr_dig: PUSH R0
-        DIV  R0, R1
-        DATA R2, 0
-        CMP  R0, R2
-        JA   pd_show
-        CMP  R3, R2
-        JA   pd_show
-        POP  R0
-        MOD  R0, R1
-        RET
-pd_show:
-        DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
+${PRINT_U32_NL}`,
     bytes: [], expect: '56088',
   },
   divide: {
@@ -765,7 +856,7 @@ done:   DATA R0, 10
   },
   shift: {
     name: 'Shift', desc: 'SHL/SHR bits',
-    code: `; Shift operations on 32-bit values
+    code: `; Shift operations on 32-bit values (low 16 bits shown)
 DATA R0, 1       ; 0000000000000001
 SHL  R0          ; 0000000000000010 (2)
 SHL  R0          ; 0000000000000100 (4)
@@ -781,33 +872,33 @@ HALT`,
     bytes: [], expect: 'R0 = 64',
   },
   logic: {
-    name: 'Logic', desc: 'All 7 gates',
-    code: `; Logic gates: AND OR XOR NOT + composites
-DATA R0, 0xAAAA  ; 1010101010101010
-DATA R1, 0x00FF  ; 0000000011111111
+    name: 'Logic', desc: 'All 7 gates (32-bit)',
+    code: `; Logic gates on 32-bit values: AND OR XOR NOT + composites
+DATA R0, 0xAAAAAAAA ; 1010…1010
+DATA R1, 0x0000FFFF ; low 16 bits set
 ; Primary gates
-AND  R0, R1      ; 0000000010101010 (0x00AA)
-DATA R0, 0xAAAA
-OR   R0, R1      ; 1010101011111111 (0xAAFF)
-DATA R0, 0xAAAA
-XOR  R0, R1      ; 1010101001010101 (0xAA55)
-DATA R0, 0xAAAA
-NOT  R0          ; 0101010101010101 (0x5555)
+AND  R0, R1      ; 0x0000AAAA
+DATA R0, 0xAAAAAAAA
+OR   R0, R1      ; 0xAAAAFFFF
+DATA R0, 0xAAAAAAAA
+XOR  R0, R1      ; 0xAAAA5555
+DATA R0, 0xAAAAAAAA
+NOT  R0          ; 0x55555555
 ; NAND = NOT(AND)
-DATA R0, 0xAAAA
+DATA R0, 0xAAAAAAAA
 AND  R0, R1
-NOT  R0          ; NAND: 0xFFFF ^ 0x00AA = 0xFF55
+NOT  R0          ; NAND: ~0x0000AAAA = 0xFFFF5555
 ; NOR = NOT(OR)
-DATA R0, 0xAAAA
+DATA R0, 0xAAAAAAAA
 OR   R0, R1
-NOT  R0          ; NOR: ~0xAAFF = 0x5500
+NOT  R0          ; NOR: ~0xAAAAFFFF = 0x55550000
 ; XNOR = NOT(XOR)
-DATA R0, 0xAAAA
+DATA R0, 0xAAAAAAAA
 XOR  R0, R1
-NOT  R0          ; XNOR: ~0xAA55 = 0x55AA
+NOT  R0          ; XNOR: ~0xAAAA5555 = 0x5555AAAA
 HALT
 ; All 7 gates from 4 instructions!`,
-    bytes: [], expect: 'R0 = 0x55AA',
+    bytes: [], expect: 'R0 = 0x5555AAAA',
   },
   stack: {
     name: 'Stack', desc: 'PUSH/POP/CALL/RET',
@@ -879,7 +970,8 @@ fdone:  DATA R0, 0
   echo: {
     name: 'Echo', desc: 'IN/OUT loop',
     code: `; Echo: reads input and prints it back
-; Type values — they echo as ASCII. Enter 0 to quit.
+; Type a character and press Enter: the program prints it back.
+; To quit, switch the input to Number and enter 0.
 loop:   DATA R0, 62     ; '>'
         OUT  R0
         DATA R0, 32     ; ' '
@@ -900,6 +992,7 @@ done:   DATA R0, 10
   adder: {
     name: 'Adder', desc: 'Add two inputs',
     code: `; Interactive adder with decimal output
+; Type two numbers (up to 4294967295); the sum wraps at 32 bits.
 ; Uses DIV/MOD for digit extraction!
         DATA R0, 65     ; 'A'
         OUT  R0
@@ -925,56 +1018,15 @@ done:   DATA R0, 10
         CALL print_r0
         HALT
 
-; ── Print R0 decimal + newline ──
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 10000
-        CALL pr_dig
-        DATA R1, 1000
-        CALL pr_dig
-        DATA R1, 100
-        CALL pr_dig
-        DATA R1, 10
-        CALL pr_dig
-        ; Ones
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-
-pr_dig: PUSH R0
-        DIV  R0, R1     ; digit
-        DATA R2, 0
-        CMP  R0, R2
-        JA   pr_show
-        CMP  R3, R2
-        JA   pr_show
-        ; Skip leading zero
-        POP  R0
-        MOD  R0, R1
-        RET
-pr_show:
-        DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
-    bytes: [], expect: 'A+B decimal',
+${PRINT_U32_NL}`,
+    bytes: [], expect: 'A + B printed in decimal (32-bit)',
   },
   calc: {
     name: 'Calc', desc: 'A op B REPL',
-    code: `; Calculator REPL with +, -, *, /
-; Enter A, op (43=+ 45=- 42=* 47=/), B
+    code: `; Calculator REPL with +, -, *, / on signed 32-bit numbers
+; Enter A, then the operator, then B. Type the operator in Character mode
+; (or as '+' with quotes in Number mode): + - * /  (anything else adds).
+; Negative numbers work: A = -7, B = 3 gives -21 for *. A = 0 quits.
 loop:   DATA R0, 62     ; '>'
         OUT  R0
         IN   R0         ; A
@@ -1010,7 +1062,7 @@ do_sub: SUB  R0, R2
         JMP  show
 do_mul: MUL  R0, R2
         JMP  show
-do_div: DIV  R0, R2
+do_div: IDIV R0, R2         ; signed divide (x / 0 gives 0)
 show:   PUSH R0
         DATA R0, 61     ; '='
         OUT  R0
@@ -1019,46 +1071,7 @@ show:   PUSH R0
         JMP  loop
 quit:   HALT
 
-; Print R0 decimal + newline (same subroutine)
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 10000
-        CALL pr_dig
-        DATA R1, 1000
-        CALL pr_dig
-        DATA R1, 100
-        CALL pr_dig
-        DATA R1, 10
-        CALL pr_dig
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-pr_dig: PUSH R0
-        DIV  R0, R1
-        DATA R2, 0
-        CMP  R0, R2
-        JA   c_show
-        CMP  R3, R2
-        JA   c_show
-        POP  R0
-        MOD  R0, R1
-        RET
-c_show: DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
+${PRINT_S32}`,
     bytes: [], expect: 'Calculator +−×÷',
   },
   primes: {
@@ -1101,47 +1114,8 @@ notpr:  LOAD R0, 1000
         JMP  main
 done:   HALT
 
-; ── Print decimal ──
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 10000
-        CALL pr_dig
-        DATA R1, 1000
-        CALL pr_dig
-        DATA R1, 100
-        CALL pr_dig
-        DATA R1, 10
-        CALL pr_dig
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-pr_dig: PUSH R0
-        DIV  R0, R1
-        DATA R2, 0
-        CMP  R0, R2
-        JA   pd_s
-        CMP  R3, R2
-        JA   pd_s
-        POP  R0
-        MOD  R0, R1
-        RET
-pd_s:   DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
-    bytes: [], expect: 'Primes to 100',
+${PRINT_U32_NL}`,
+    bytes: [], expect: '2 3 5 7 11 … 89 97',
   },
   video: {
     name: 'Video', desc: 'Bouncing ball (real-time)',
@@ -1191,13 +1165,13 @@ iter_loop:
         ; zr² = fpmul(zr, zr)
         MOV  R0, R8
         MOV  R1, R8
-        CALL fpmul           ; R0 = zr²
+        CALL fpmul_sw        ; R0 = zr²
         MOV  R2, R0          ; R2 = zr²
 
         ; zi² = fpmul(zi, zi)
         MOV  R0, R9
         MOV  R1, R9
-        CALL fpmul           ; R0 = zi²
+        CALL fpmul_sw        ; R0 = zi²
         MOV  R3, R0          ; R3 = zi²
 
         ; Check escape: zr² + zi² > 1024 (4.0)?
@@ -1215,7 +1189,7 @@ iter_loop:
         ; ── new_zi = 2 * zr * zi + ci ──
         MOV  R0, R8
         MOV  R1, R9
-        CALL fpmul           ; R0 = zr*zi
+        CALL fpmul_sw        ; R0 = zr*zi
         SHL  R0              ; 2*zr*zi
         ADD  R0, R7          ; + ci
 
@@ -1281,8 +1255,8 @@ done:   DATA R0, 0
 ; fpmul: Signed 8.8 fixed-point multiply
 ; Input: R0, R1 (signed 8.8 in 32-bit)
 ; Output: R0 = R0 × R1 in 8.8
-; Uses: R2, R3 (caller-save)
-fpmul:
+; Saves and restores R2, R3
+fpmul_sw:
         PUSH R2
         PUSH R3
         DATA R2, 0           ; sign flag
@@ -1311,11 +1285,7 @@ fp_r1pos:
         MOV  R3, R0
         MULH R3, R1          ; R3 = high 32
         MUL  R0, R1          ; R0 = low 32
-        ; Result = (hi << 24) | (lo >> 8)
-        ; For 8.8: shift right by 8 to normalize
-        SHRN R0, R14         ; shift R0 right by 1? No...
-        ; Actually: result = (hi:lo) >> 8
-        ; lo >> 8:
+        ; Result = (hi:lo) >> 8 = (hi << 24) | (lo >> 8)
         DATA R11, 8
         SHRN R0, R11         ; R0 = lo >> 8
         ; hi << 24:
@@ -1568,17 +1538,25 @@ ffz_h:  POP  R3
         HALT`,
     bytes: [], expect: 'Fast Mandelbrot using FPMUL opcode',
   },
+  mandelbrot_1616: {
+    name: 'Mandelbrot 16.16', desc: 'FPMUL16 fixed point, finer detail',
+    code: generateMandelbrot1616(),
+    bytes: [], expect: 'Mandelbrot set in 16.16 fixed point',
+  },
   fractal_zoom: {
-    name: '🎬 Fractal Zoom', desc: 'JS-rendered smooth zoom (Seahorse Valley)',
-    code: `; Fractal Zoom — JS-rendered Mandelbrot animation
-; This demo uses native JavaScript to render directly to VRAM
-; with float64 precision, enabling smooth continuous zoom.
-; The CPU is idle — all rendering is done by the host.
+    name: '🎬 Fractal Zoom (host demo)', desc: 'JavaScript, not the CPU',
+    code: `; Fractal Zoom — a HOST demo, not a program for this CPU
+; JavaScript on your computer renders a Mandelbrot zoom with float64
+; maths and writes the pixels straight into VRAM (0x3D0000). The
+; simulated CPU only runs this HALT. Step, Run, Reset, Wipe RAM or
+; loading a program stops the animation.
 ;
-; Target: Seahorse Valley (-0.745, 0.186)
-; 200+ frames of smooth zoom with color cycling
+; Target: -0.7453 + 0.1127i (Seahorse Valley)
+; About 490 frames of zoom (3.5% per frame), then colour cycling.
+; For fractals computed by the CPU see Mandelbrot, Fractal Fast and
+; Mandelbrot 16.16.
 HALT`,
-    bytes: [], expect: 'JS-rendered fractal zoom animation',
+    bytes: [], expect: 'Host JavaScript zoom (the CPU is idle)',
   },
   power: {
     name: 'Power', desc: '2^15 = 32768',
@@ -1669,41 +1647,7 @@ done:   ; Print sorted values
         CALL print_r0
         HALT
 
-print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R3, 0
-        DATA R1, 100
-        CALL pr_d
-        DATA R1, 10
-        CALL pr_d
-        DATA R1, 48
-        ADD  R0, R1
-        OUT  R0
-        DATA R0, 10
-        OUT  R0
-        POP  R3
-        POP  R2
-        POP  R1
-        RET
-pr_d:   PUSH R0
-        DIV  R0, R1
-        DATA R2, 0
-        CMP  R0, R2
-        JA   pds
-        CMP  R3, R2
-        JA   pds
-        POP  R0
-        MOD  R0, R1
-        RET
-pds:    DATA R3, 1
-        DATA R2, 48
-        ADD  R0, R2
-        OUT  R0
-        POP  R0
-        MOD  R0, R1
-        RET`,
+${PRINT_U32_NL}`,
     bytes: [], expect: '12 25 37 64 89',
   },
   matrix: {
@@ -1897,73 +1841,26 @@ jend:
 
 done:   HALT
 
-; ══════════════════════════════════════
-; ── print_r0: print R0 as decimal ──
-; Handles 0..255
 print_r0:
-        PUSH R1
-        PUSH R2
-        PUSH R3
-        DATA R1, 100
-        DATA R2, 10
-        DATA R3, 0          ; leading zero flag
-
-        ; Hundreds digit
-        DATA R11, 0
-        ADD  R11, R0
-        DIV  R11, R1         ; R11 = R0 / 100
-        DATA R9, 0
-        CMP  R11, R9
-        JE   tens
-        DATA R3, 1           ; have leading digit
-        DATA R9, 48
-        ADD  R11, R9
-        OUT  R11
-        ; R0 = R0 mod 100
-        MOD  R0, R1
-
-tens:   DATA R11, 0
-        ADD  R11, R0
-        DIV  R11, R2         ; R11 = R0 / 10
-        DATA R9, 0
-        CMP  R11, R9
-        JE   chk_tens
-        DATA R3, 1
-        JMP  pr_tens
-chk_tens:
-        CMP  R3, R9
-        JE   ones            ; skip if no leading digit
-pr_tens:
-        DATA R9, 48
-        ADD  R11, R9
-        OUT  R11
-        MOD  R0, R2
-
-ones:   DATA R9, 48
-        ADD  R0, R9
-        OUT  R0
-
-        POP  R3
-        POP  R2
-        POP  R1
-        RET`,
+${printU32(false)}`,
     bytes: [], expect: '5 6 7 12 / 17 14 19 28 / 3 0 3 0 / 0 2 0 4',
   },
   flags: {
     name: 'Flags', desc: 'Flag tests',
-    code: `; Test all CPU flags
+    code: `; Test all CPU flags (step through and watch C Z A E)
+; CMP sets the flags as for rA - rB without storing the result.
 DATA R0, 100
 DATA R1, 200
-CMP  R0, R1     ; A<B: carry=1, a_larger=0, equal=0
+CMP  R0, R1     ; 100 < 200: C=1 (borrow), A=0, E=0
 DATA R0, 200
-CMP  R0, R1     ; A==B: equal=1
+CMP  R0, R1     ; 200 = 200: E=1, Z=1, C=0
 DATA R0, 300
-CMP  R0, R1     ; A>B: a_larger=1
-DATA R0, 65535
+CMP  R0, R1     ; 300 > 200: A=1, C=0
+DATA R0, 0xFFFFFFFF
 DATA R1, 1
-ADD  R0, R1     ; overflow → carry=1, R0=0, zero=1
+ADD  R0, R1     ; 0xFFFFFFFF + 1 overflows: R0=0, C=1, Z=1
 HALT`,
-    bytes: [], expect: 'Carry + Zero set',
+    bytes: [], expect: 'C = 1, Z = 1 (R0 = 0)',
   },
   minmax: {
     name: 'MinMax', desc: 'Find min & max',
@@ -2037,5 +1934,8 @@ export const SAMPLE_CATEGORIES: Array<{ label: string; icon: string; keys: strin
   { label: 'Arithmetic',      icon: '📘', keys: ['multiply', 'divide', 'power', 'factorial', 'gcd', 'minmax'] },
   { label: 'Console I/O',     icon: '📙', keys: ['hello', 'echo', 'adder', 'calc', 'fibonacci', 'primes'] },
   { label: 'Data Structures',  icon: '📕', keys: ['stack', 'sort', 'matrix'] },
-  { label: 'Video',           icon: '📺', keys: ['video', 'mandelbrot', 'mandelbrot_anim', 'fractal_fast', 'fractal_zoom'] },
+  { label: 'Video',           icon: '📺', keys: ['video', 'mandelbrot', 'mandelbrot_1616', 'mandelbrot_anim', 'fractal_fast', 'fractal_zoom'] },
 ];
+
+/** Samples drawn by JavaScript on the host instead of the simulated CPU. */
+export const HOST_DEMOS: ReadonlySet<string> = new Set(['fractal_zoom']);

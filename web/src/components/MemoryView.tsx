@@ -5,6 +5,37 @@ interface Props {
   memoryVersion: number;
   currentAddress: number;
   onPoke: (addr: number, value: number) => void;
+  /** Labels of the loaded program, for "Go to". */
+  labels?: Map<string, number> | null;
+}
+
+const MEM_SIZE_BYTES = 4_194_304;
+
+/**
+ * A byte typed into a RAM cell. Cells show hex, so plain digits are hex too
+ * ("10" is 0x10 = 16). Use #16 for decimal or 'c' for a character.
+ */
+export function parseCellValue(text: string): number | null {
+  const t = text.trim();
+  let v: number | null = null;
+  if (/^(0x)?[0-9a-f]{1,2}$/i.test(t)) v = parseInt(t.replace(/^0x/i, ''), 16);
+  else if (/^#\d{1,3}$/.test(t)) v = parseInt(t.slice(1), 10);
+  else if (/^'.'$/.test(t)) v = t.charCodeAt(1);
+  return v !== null && v >= 0 && v <= 255 ? v : null;
+}
+
+/** An address typed into "Go to": hex (0x optional) or a label of the loaded program. */
+export function parseGotoAddress(text: string, labels?: Map<string, number> | null): number | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (labels) {
+    for (const [name, addr] of labels) if (name.toLowerCase() === t.toLowerCase()) return addr;
+  }
+  if (/^(0x)?[0-9a-f]{1,6}$/i.test(t)) {
+    const v = parseInt(t.replace(/^0x/i, ''), 16);
+    return v < MEM_SIZE_BYTES ? v : null;
+  }
+  return null;
 }
 
 const hex8 = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
@@ -38,25 +69,21 @@ function EditCell(props: {
   useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
 
   const commit = () => {
-    let val: number | null = null;
-    const t = text.trim();
-    if (/^0[xX][0-9a-fA-F]+$/.test(t)) val = parseInt(t, 16);
-    else if (/^[0-9a-fA-F]{1,2}$/i.test(t) && !t.match(/^[0-9]+$/)) val = parseInt(t, 16);
-    else if (/^\d+$/.test(t)) val = parseInt(t, 10);
-    else if (t.length === 3 && t[0] === "'" && t[2] === "'") val = t.charCodeAt(1);
-    else if (t.length === 1) val = t.charCodeAt(0);
-    if (val !== null && val >= 0 && val <= 255) onCommit(addr, val);
+    const val = parseCellValue(text);
+    if (val !== null) onCommit(addr, val);
     else onCancel();
   };
 
   return (
     <input ref={inputRef} value={text}
+      aria-label={`Byte at 0x${hex24(addr)} in hex`}
+      title="Hex byte (00-FF). Use #65 for decimal or 'A' for a character."
       onChange={e => setText(e.target.value)}
       onBlur={commit}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') onCancel(); if (e.key === 'Tab') { e.preventDefault(); commit(); } }}
       style={{
-        width: 22, height: 15, padding: 0, margin: 0,
-        fontFamily: 'var(--font-mono)', fontSize: '0.58rem',
+        width: 20, height: 15, padding: 0, margin: 0,
+        fontFamily: 'var(--font-mono)', fontSize: '0.6875rem',
         textAlign: 'center', border: '1px solid #3b82f6',
         borderRadius: 2, background: '#1e3a5f', color: '#93c5fd',
         outline: 'none',
@@ -65,8 +92,21 @@ function EditCell(props: {
   );
 }
 
-export default function MemoryView({ memory, memoryVersion, currentAddress, onPoke }: Props) {
+export default function MemoryView({ memory, memoryVersion, currentAddress, onPoke, labels }: Props) {
   const [page, setPage] = useState(0);
+  const [gotoText, setGotoText] = useState('');
+  const [gotoError, setGotoError] = useState<string | null>(null);
+  const [marked, setMarked] = useState<number | null>(null);
+  const goTo = () => {
+    const a = parseGotoAddress(gotoText, labels);
+    if (a === null) {
+      setGotoError(`Unknown address or label: ${gotoText.trim() || '(empty)'}`);
+      return;
+    }
+    setGotoError(null);
+    setPage(Math.floor(a / PAGE_SIZE));
+    setMarked(a);
+  };
   const [editAddr, setEditAddr] = useState<number | null>(null);
   const totalPages = Math.ceil(MEM_SIZE / PAGE_SIZE);
   const pcPage = Math.floor(currentAddress / PAGE_SIZE);
@@ -83,7 +123,7 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
       {/* ── Header row ── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
         <div style={{
-          fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted)',
+          fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-muted)',
           textTransform: 'uppercase' as const, letterSpacing: '1px',
           display: 'flex', alignItems: 'center', gap: 6,
         }}>
@@ -93,38 +133,43 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
 
         {/* Navigation */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <NavBtn onClick={() => setPage(0)} disabled={page === 0}>⏮</NavBtn>
-          <NavBtn onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>◀</NavBtn>
+          <NavBtn onClick={() => setPage(0)} disabled={page === 0} label="First page">⏮</NavBtn>
+          <NavBtn onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} label="Previous 256 bytes">◀</NavBtn>
           <input
             type="text"
-            value={page}
-            onChange={e => {
-              const v = parseInt(e.target.value, 10);
-              if (!isNaN(v) && v >= 0 && v < totalPages) setPage(v);
-            }}
+            value={gotoText}
+            placeholder="Go to 0x… or label"
+            aria-label="Go to address (hex) or label"
+            aria-invalid={!!gotoError}
+            title="Hex address (0x optional) or a label of the loaded program; Enter to jump"
+            onChange={e => { setGotoText(e.target.value); setGotoError(null); }}
+            onKeyDown={e => { if (e.key === 'Enter') goTo(); }}
             style={{
-              width: 44, fontSize: '0.55rem', fontFamily: 'var(--font-mono)',
-              color: 'var(--text-secondary)', textAlign: 'center',
-              background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-              borderRadius: 3, padding: '1px 2px', outline: 'none',
+              width: 128, fontSize: '0.6875rem', fontFamily: 'var(--font-mono)',
+              color: 'var(--text-secondary)',
+              background: 'var(--bg-elevated)', border: `1px solid ${gotoError ? 'var(--accent-red)' : 'var(--border-default)'}`,
+              borderRadius: 3, padding: '1px 4px', outline: 'none',
             }}
           />
-          <span style={{ fontSize: '0.5rem', color: 'var(--text-dim)' }}>/{totalPages - 1}</span>
-          <NavBtn onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}>▶</NavBtn>
-          <NavBtn onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}>⏭</NavBtn>
+          <NavBtn onClick={goTo} disabled={!gotoText.trim()} label="Go to address">Go</NavBtn>
+          <NavBtn onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} label="Next 256 bytes">▶</NavBtn>
+          <NavBtn onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1} label="Last page">⏭</NavBtn>
         </div>
       </div>
 
       {/* ── Address bar: hex + decimal ── */}
       <div style={{
-        fontSize: '0.55rem', fontFamily: 'var(--font-mono)',
+        fontSize: '0.6875rem', fontFamily: 'var(--font-mono)',
         color: 'var(--text-dim)', marginBottom: 4,
         display: 'flex', gap: 8,
       }}>
         <span>0x{hex24(pageStart)}–0x{hex24(pageStart + PAGE_SIZE - 1)}</span>
         <span style={{ color: 'var(--text-dim)' }}>({pageStart}–{pageStart + PAGE_SIZE - 1})</span>
-        <span>4MB total</span>
+        <span>4MB · click a byte to edit (hex)</span>
       </div>
+      {gotoError && (
+        <div role="alert" style={{ color: 'var(--accent-red)', fontSize: '0.6875rem', marginBottom: 4 }}>{gotoError}</div>
+      )}
 
       {/* ── Quick-jump region buttons ── */}
       <div style={{ display: 'flex', gap: 3, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -139,24 +184,24 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
       </div>
 
       {/* ── Hex grid ── */}
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.58rem', lineHeight: '1.5' }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: '1.5' }}>
 
         {/* Column headers */}
         <div style={{ display: 'flex', alignItems: 'baseline' }}>
-          <span style={{ width: 62, flexShrink: 0 }} />
+          <span style={{ width: 50, flexShrink: 0, color: 'var(--text-muted)', fontWeight: 600 }}>Addr</span>
           {Array.from({ length: COLS }, (_, i) => (
             <span key={i} style={{
-              width: 22, textAlign: 'center',
+              width: 20, textAlign: 'center',
               color: i % 4 === 0 ? 'var(--text-muted)' : 'var(--text-dim)',
-              fontSize: '0.5rem', fontWeight: i % 4 === 0 ? 600 : 400,
+              fontSize: '0.6875rem', fontWeight: i % 4 === 0 ? 600 : 400,
               marginLeft: i > 0 && i % 8 === 0 ? 4 : 0,
             }}>
               .{i.toString(16).toUpperCase()}
             </span>
           ))}
           <span style={{
-            fontSize: '0.48rem', color: 'var(--text-dim)',
-            paddingLeft: 10, letterSpacing: '0.5px',
+            fontSize: '0.6875rem',
+            paddingLeft: 10, letterSpacing: '0.5px', color: 'var(--text-muted)', fontWeight: 600,
           }}>ASCII</span>
         </div>
 
@@ -173,8 +218,8 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
             }}>
               {/* Row address */}
               <span style={{
-                width: 62, flexShrink: 0,
-                color: 'var(--text-muted)', fontSize: '0.55rem',
+                width: 50, flexShrink: 0,
+                color: 'var(--text-muted)', fontSize: '0.6875rem',
                 fontWeight: 500,
                 paddingRight: 4,
               }}>{hex24(rowAddr)}</span>
@@ -184,6 +229,7 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
                 const addr = rowAddr + col;
                 const val = pageMemory[row * COLS + col] ?? 0;
                 const isPC = addr === currentAddress;
+                const isMarked = addr === marked;
                 const isNonZero = val !== 0;
                 const isEditing = editAddr === addr;
 
@@ -197,9 +243,10 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
                   <span key={col}
                     onClick={() => setEditAddr(addr)}
                     style={{
-                      width: 22, textAlign: 'center', cursor: 'pointer',
+                      width: 20, textAlign: 'center', cursor: 'pointer',
                       color: isPC ? '#f59e0b' : isNonZero ? 'var(--text-secondary)' : 'var(--text-dim)',
-                      background: isPC ? 'rgba(245,158,11,0.12)' : 'transparent',
+                      background: isPC ? 'rgba(245,158,11,0.12)' : isMarked ? 'rgba(56,189,248,0.18)' : 'transparent',
+                      outline: isMarked ? '1px solid var(--accent-blue)' : 'none',
                       borderRadius: 2,
                       fontWeight: isPC ? 700 : 400,
                       marginLeft: col > 0 && col % 8 === 0 ? 4 : 0,
@@ -215,8 +262,8 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
               <span style={{
                 paddingLeft: 6, marginLeft: 4,
                 borderLeft: '1px solid var(--border-subtle)',
-                fontSize: '0.54rem',
-                letterSpacing: '1px',
+                fontSize: '0.6875rem',
+                letterSpacing: '0px',
                 whiteSpace: 'pre',
                 userSelect: 'none',
               }}>
@@ -245,11 +292,11 @@ export default function MemoryView({ memory, memoryVersion, currentAddress, onPo
 
 /* ── Sub-components ── */
 
-function NavBtn(props: { onClick: () => void; disabled: boolean; children: any }) {
-  const { onClick, disabled, children } = props;
+function NavBtn(props: { onClick: () => void; disabled: boolean; children: any; label: string }) {
+  const { onClick, disabled, children, label } = props;
   return (
-    <button onClick={onClick} disabled={disabled} style={{
-      fontSize: '0.6rem', padding: '2px 5px', borderRadius: 3,
+    <button onClick={onClick} disabled={disabled} aria-label={label} title={label} style={{
+      fontSize: '0.6875rem', padding: '2px 5px', borderRadius: 3,
       cursor: disabled ? 'default' : 'pointer',
       background: 'transparent',
       color: disabled ? 'var(--text-dim)' : 'var(--text-primary)',
@@ -265,7 +312,7 @@ function RegionBtn(props: { active: boolean; color: string; onClick: () => void;
   const { active, color, onClick, children } = props;
   return (
     <button onClick={onClick} style={{
-      fontSize: '0.5rem', fontWeight: 600,
+      fontSize: '0.6875rem', fontWeight: 600,
       padding: '2px 6px', borderRadius: 3, cursor: 'pointer',
       background: active ? `${color}18` : 'transparent',
       color: active ? color : 'var(--text-muted)',

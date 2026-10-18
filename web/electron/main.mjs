@@ -1,7 +1,7 @@
 // ============================================================================
 // electron/main.mjs — GateStack Electron Main Process
 // ============================================================================
-import { app, BrowserWindow, Menu, shell, dialog, session } from 'electron';
+import { app, BrowserWindow, Menu, shell, session } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -10,6 +10,16 @@ const __dirname = path.dirname(__filename);
 const isDev = process.env.NODE_ENV === 'development';
 
 let mainWindow = null;
+
+// 'wasm-unsafe-eval' lets the page compile WebAssembly (the Rust CPU core)
+// without allowing JavaScript eval. Without it the app silently falls back
+// to the JavaScript engine.
+const CSP = [
+  "default-src 'self' file: data:",
+  "script-src 'self' file: 'unsafe-inline' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' file: data: blob:",
+].join('; ') + ';';
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -33,17 +43,15 @@ function createWindow() {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': ["default-src 'self' file: data:; script-src 'self' file: 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:;"]
-      }
+        'Content-Security-Policy': [CSP],
+      },
     });
   });
 
-  // Graceful show
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
-  // Load the app
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -63,57 +71,51 @@ function createWindow() {
   });
 }
 
+const send = (channel) => () => mainWindow?.webContents.send(channel);
+
 // ── Application Menu ────────────────────────────────────────────────────
+// Ctrl+R / Ctrl+Shift+R are not used: in production there is no reload
+// (reloading would throw away the CPU state), and Reset CPU is on F8.
 function buildMenu() {
+  const viewMenu = [
+    ...(isDev ? [
+      { role: 'reload' },
+      { role: 'forceReload' },
+      { role: 'toggleDevTools' },
+      { type: 'separator' },
+    ] : []),
+    { role: 'resetZoom' },
+    { role: 'zoomIn' },
+    { role: 'zoomOut' },
+    { type: 'separator' },
+    { role: 'togglefullscreen' },
+  ];
+
   const template = [
     {
       label: 'File',
-      submenu: [
-        { label: 'Reset Computer', accelerator: 'CmdOrCtrl+R', click: () => mainWindow?.webContents.send('menu:reset') },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
+      submenu: [{ role: 'quit' }],
     },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
+    { label: 'View', submenu: viewMenu },
     {
       label: 'Simulation',
       submenu: [
-        { label: 'Step (S)', accelerator: 'F10', click: () => mainWindow?.webContents.send('menu:step') },
-        { label: 'Step Back (B)', accelerator: 'F9', click: () => mainWindow?.webContents.send('menu:stepback') },
-        { label: 'Run (R)', accelerator: 'F5', click: () => mainWindow?.webContents.send('menu:run') },
-        { label: 'Pause (P)', accelerator: 'F6', click: () => mainWindow?.webContents.send('menu:pause') },
+        { label: 'Step (S)', accelerator: 'F10', click: send('menu:step') },
+        { label: 'Step Back (B)', accelerator: 'F9', click: send('menu:stepback') },
+        { label: 'Run (R)', accelerator: 'F5', click: send('menu:run') },
+        { label: 'Pause (P)', accelerator: 'F6', click: send('menu:pause') },
         { type: 'separator' },
-        { label: 'Reset', accelerator: 'CmdOrCtrl+Shift+R', click: () => mainWindow?.webContents.send('menu:reset') },
+        { label: 'Reset CPU (keeps RAM)', accelerator: 'F8', click: send('menu:reset') },
+        { label: 'Wipe RAM', click: send('menu:wipe') },
       ],
     },
     {
       label: 'Help',
       submenu: [
-        {
-          label: 'About GateStack',
-          click: () => {
-            const version = app.getVersion() || '0.2.0';
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'About GateStack',
-              message: `GateStack v${version}`,
-              detail: `Version: ${version}\nElectron: ${process.versions.electron}\nChrome: ${process.versions.chrome}\nNode: ${process.versions.node}\n\nA visual 32-bit computer simulator.\nBuilt with Electron, React, and TypeScript.\nRust/WASM core available (experimental).\n\nInspired by J. Clark Scott's "But How Do It Know?"\nand nand2tetris.org by Nisan & Schocken.`,
-            });
-          },
-        },
+        { label: 'Quick Reference (?)', click: send('menu:help') },
+        { type: 'separator' },
+        // The About box is an in-app dialog, so its text can be selected and copied.
+        { label: 'About GateStack', click: send('menu:about') },
       ],
     },
   ];

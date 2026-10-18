@@ -1,9 +1,16 @@
 // ============================================================================
-// App.tsx — GateStack Main Application (Polished UI)
+// App.tsx — GateStack Main Application
+// ============================================================================
+// The editor text and the program in RAM are tracked separately: `loaded` is
+// the source that was last assembled into RAM, with its assembly result. When
+// the editor differs, the editor says so and the PC highlight, breakpoints and
+// expected-result line (all of which describe the loaded program) step aside.
 // ============================================================================
 
-import React, { useState, useEffect } from 'react';
-import { useComputer } from '../hooks/useComputer';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useComputer, ComputerHook } from '../hooks/useComputer';
+import { shortcutFor } from '../hooks/shortcuts';
+import { loadEdits, saveEdits, clearEdits, loadActiveSample, saveActiveSample } from '../hooks/editorStorage';
 import CpuView from './CpuView';
 import MemoryView from './MemoryView';
 import Toolbar from './Toolbar';
@@ -14,10 +21,14 @@ import SignalTrace from './SignalTrace';
 import ConsoleView from './ConsoleView';
 import HelpPanel from './HelpPanel';
 import VideoView from './VideoView';
-import { assemble } from '../assembler';
-import { SAMPLE_PROGRAMS, SAMPLE_CATEGORIES } from '../samples';
+import { AboutDialog, DiscardDialog, APP_VERSION, ElectronVersions } from './Modal';
+import { startFractalZoom } from './fractalZoom';
+import { assemble, AssemblyResult } from '../assembler';
+import { SAMPLE_PROGRAMS, SAMPLE_CATEGORIES, HOST_DEMOS } from '../samples';
 
 // ── CSS Variables & Global Styles ─────────────────────────────────────
+// Text colours are chosen for at least 4.5:1 contrast on --bg-base and
+// --bg-elevated (WCAG AA); nothing in the UI is smaller than 11px.
 
 const GLOBAL_CSS = `
   :root {
@@ -29,9 +40,9 @@ const GLOBAL_CSS = `
     --border-default: #1e2a42;
     --border-bright: #2a3a5c;
     --text-primary: #e2e8f0;
-    --text-secondary: #a0aec0;
-    --text-muted: #718096;
-    --text-dim: #4a5568;
+    --text-secondary: #b8c4d4;
+    --text-muted: #9aa8bc;
+    --text-dim: #7d899d;
     --accent-blue: #38bdf8;
     --accent-blue-dim: #0c4a6e;
     --accent-green: #34d399;
@@ -52,7 +63,10 @@ const GLOBAL_CSS = `
     --glow-green: 0 0 12px rgba(52, 211, 153, 0.15);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; overflow: hidden; }
+  body { margin: 0; overflow: hidden; background: var(--bg-base); }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent-blue); outline-offset: 1px;
+  }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: var(--bg-base); }
   ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
@@ -120,103 +134,17 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '3px 16px',
     borderTop: '1px solid var(--border-subtle)',
     background: 'var(--bg-surface)',
-    fontSize: '0.68rem',
+    fontSize: '0.6875rem',
     fontFamily: "var(--font-mono)",
     color: 'var(--text-muted)',
     flexShrink: 0,
+    minWidth: 0,
   },
 };
 
-// ── JS Fractal Zoom Renderer ────────────────────────────────────────────
-// Renders Mandelbrot directly to VRAM with float64 precision.
-// v2.0: 8bpp, 256 colors
-// JS-rendered: writes directly to front buffer (no tearing — JS is single-threaded)
-// Returns a cleanup function to stop the animation.
-function startFractalZoom(
-  pokeRaw: (addr: number, val: number) => void,
-  refresh: () => void,
-): () => void {
-  let running = true;
-  const GRID = 256;
-  const FRONT_BUFFER = 0x3D0000;
-  const MAX_ITER = 128;
+const hex6 = (n: number) => '0x' + (n >>> 0).toString(16).padStart(6, '0').toUpperCase();
 
-  // Target: Seahorse Valley
-  const TARGET_RE = -0.7453;
-  const TARGET_IM = 0.1127;
-
-  // Start with standard view
-  let scale = 3.5;  // width in real coords
-  const ZOOM_FACTOR = 0.965;  // 3.5% zoom per frame
-  const MIN_SCALE = 0.0000001;
-  let colorOffset = 0;
-  let frame = 0;
-
-  function renderFrame() {
-    if (!running) return;
-
-    const halfW = scale / 2;
-    const halfH = (scale * 0.8) / 2;
-    const reMin = TARGET_RE - halfW;
-    const imMin = TARGET_IM - halfH;
-    const reStep = scale / GRID;
-    const imStep = (scale * 0.8) / GRID;
-
-    // Render to VRAM — 8bpp: one byte per pixel
-    for (let py = 0; py < GRID; py++) {
-      const ci = imMin + py * imStep;
-      for (let px = 0; px < GRID; px++) {
-        const cr = reMin + px * reStep;
-
-        // Mandelbrot iteration
-        let zr = 0, zi = 0;
-        let iter = 0;
-        while (iter < MAX_ITER) {
-          const zr2 = zr * zr;
-          const zi2 = zi * zi;
-          if (zr2 + zi2 > 4) break;
-          zi = 2 * zr * zi + ci;
-          zr = zr2 - zi2 + cr;
-          iter++;
-        }
-
-        // Color: 0 for inside, 1-255 for escaped with cycling
-        let color = 0;
-        if (iter < MAX_ITER) {
-          color = ((iter + colorOffset) % 255) + 1;
-        }
-
-        // 8bpp: one byte per pixel — write to front buffer
-        const addr = FRONT_BUFFER + py * 256 + px;
-        pokeRaw(addr, color & 0xFF);
-      }
-    }
-
-    refresh();
-
-    // Advance animation
-    if (scale > MIN_SCALE) {
-      scale *= ZOOM_FACTOR;
-    }
-    colorOffset++;
-    frame++;
-
-    // Schedule next frame
-    if (running) {
-      requestAnimationFrame(renderFrame);
-    }
-  }
-
-  // Start
-  requestAnimationFrame(renderFrame);
-
-  // Return cleanup
-  return () => { running = false; };
-}
-
-
-// ── Main App ─────────────────────────────────────────────────────────────
-
+// ── Sample menu ──────────────────────────────────────────────────────────
 
 function SampleDropdown({ activeProgram, onSelect }: {
   activeProgram: string;
@@ -225,25 +153,30 @@ function SampleDropdown({ activeProgram, onSelect }: {
   const [open, setOpen] = React.useState(false);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
 
-  // Close on click outside
+  // Close on click outside (a menu, not a dialog)
   React.useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   const activeName = SAMPLE_PROGRAMS[activeProgram]?.name ?? 'Select';
 
   return (
     <div ref={dropdownRef} style={{ position: 'relative' }}>
-      {/* Trigger button */}
       <button
         onClick={() => setOpen(!open)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Sample program: ${activeName}`}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
           padding: '5px 12px', borderRadius: 6, width: 400,
@@ -255,59 +188,66 @@ function SampleDropdown({ activeProgram, onSelect }: {
         }}
       >
         <span style={{ color: 'var(--accent-blue)' }}>{activeName}</span>
-        <span style={{ fontSize: '0.55rem', color: 'var(--text-dim)', marginLeft: 2 }}>▼</span>
+        <span aria-hidden="true" style={{ fontSize: '0.6875rem', color: 'var(--text-dim)', marginLeft: 2 }}>▼</span>
       </button>
 
-      {/* Dropdown panel */}
       {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4,
-          background: 'var(--bg-surface, #1a1a2e)',
-          border: '1px solid var(--border-subtle)',
+        <div role="menu" style={{
+          position: 'absolute', top: '100%', right: 0, marginTop: 4,
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border-default)',
           borderRadius: 8, padding: '6px 0',
           boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-          zIndex: 1000, minWidth: 240, maxHeight: '70vh', overflowY: 'auto',
+          zIndex: 1000, minWidth: 400, maxHeight: '75vh', overflowY: 'auto',
         }}>
           {SAMPLE_CATEGORIES.map(cat => (
             <div key={cat.label}>
-              {/* Category header */}
               <div style={{
                 padding: '6px 14px 3px',
-                fontSize: '0.6rem', fontWeight: 700,
+                fontSize: '0.6875rem', fontWeight: 700,
                 color: 'var(--text-muted)',
                 textTransform: 'uppercase', letterSpacing: '0.8px',
                 display: 'flex', alignItems: 'center', gap: 6,
               }}>
-                <span>{cat.icon}</span> {cat.label}
+                <span aria-hidden="true">{cat.icon}</span> {cat.label}
               </div>
-              {/* Items */}
               {cat.keys.map(key => {
                 const prog = SAMPLE_PROGRAMS[key];
                 if (!prog) return null;
                 const isActive = key === activeProgram;
+                const isHost = HOST_DEMOS.has(key);
                 return (
                   <button
                     key={key}
-                    onClick={() => { onSelect(key); setOpen(false); }}
+                    role="menuitem"
+                    onClick={() => { setOpen(false); onSelect(key); }}
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       width: '100%', padding: '5px 14px 5px 28px',
-                      background: isActive ? 'var(--accent-blue-dim, rgba(59,130,246,0.1))' : 'transparent',
+                      background: isActive ? 'var(--accent-blue-dim)' : 'transparent',
                       border: 'none', cursor: 'pointer',
                       transition: 'background 0.1s',
                       textAlign: 'left',
                     }}
-                    onMouseEnter={e => { if (!isActive) (e.target as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-                    onMouseLeave={e => { if (!isActive) (e.target as HTMLElement).style.background = 'transparent'; }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
                   >
                     <span style={{
-                      fontSize: '0.72rem', fontWeight: isActive ? 700 : 500,
+                      fontSize: '0.75rem', fontWeight: isActive ? 700 : 500,
                       color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
-                      fontFamily: 'var(--font-ui)',
-                    }}>{prog.name}</span>
+                      fontFamily: 'var(--font-ui)', display: 'flex', alignItems: 'center', gap: 6,
+                    }}>
+                      {prog.name}
+                      {isHost && (
+                        <span style={{
+                          fontSize: '0.6875rem', fontWeight: 700, color: 'var(--accent-amber)',
+                          border: '1px solid var(--accent-amber-dim)', borderRadius: 3, padding: '0 4px',
+                        }} title="Drawn by JavaScript on the host, not by the simulated CPU">HOST JS</span>
+                      )}
+                    </span>
                     <span style={{
-                      fontSize: '0.58rem', color: 'var(--text-dim)',
-                      fontFamily: 'var(--font-mono)', marginLeft: 12,
+                      fontSize: '0.6875rem', color: 'var(--text-muted)',
+                      fontFamily: 'var(--font-mono)', marginLeft: 12, textAlign: 'right',
                     }}>{prog.desc}</span>
                   </button>
                 );
@@ -320,78 +260,204 @@ function SampleDropdown({ activeProgram, onSelect }: {
   );
 }
 
+// ── Status text ──────────────────────────────────────────────────────────
+
+export function statusFor(computer: Pick<ComputerHook, 'isRunning' | 'fault' | 'stopReason' | 'waitingForInput' | 'state'>): {
+  text: string; color: string;
+} {
+  const fault = computer.fault ?? (computer.stopReason?.kind === 'fault' ? computer.stopReason.message : null);
+  if (computer.isRunning) return { text: 'Running', color: 'var(--accent-green)' };
+  if (fault) return { text: `Fault: ${fault}`, color: 'var(--accent-red)' };
+  if (computer.waitingForInput) return { text: `Waiting for input (R${computer.waitingForInput.register})`, color: 'var(--accent-blue)' };
+  if (computer.state?.halted) return { text: 'Halted', color: 'var(--accent-red)' };
+  const r = computer.stopReason;
+  if (r?.kind === 'breakpoint' && computer.state?.iar === r.address) {
+    return { text: `Stopped at breakpoint ${hex6(r.address)}`, color: 'var(--accent-red)' };
+  }
+  if (r?.kind === 'paused') return { text: 'Paused', color: 'var(--accent-amber)' };
+  return { text: 'Ready', color: 'var(--accent-amber)' };
+}
+
+function sameBytes(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+type Pending = { kind: 'sample'; key: string } | { kind: 'revert' };
+
+// ── Main App ─────────────────────────────────────────────────────────────
+
 export default function App() {
   const computer = useComputer([]);
-  const [activeProgram, setActiveProgram] = useState('add');
-  const [editorCode, setEditorCode] = useState(SAMPLE_PROGRAMS.add.code);
+
+  // Restore the last sample and its autosaved edits.
+  const [initial] = useState(() => {
+    const saved = loadActiveSample();
+    const key = saved && SAMPLE_PROGRAMS[saved] ? saved : 'add';
+    return { key, code: loadEdits(key) ?? SAMPLE_PROGRAMS[key].code };
+  });
+  const [activeProgram, setActiveProgram] = useState(initial.key);
+  const [editorCode, setEditorCode] = useState(initial.code);
+  /** The source that is in RAM, with its assembly result. */
+  const [loaded, setLoaded] = useState<{ source: string; result: AssemblyResult } | null>(null);
+  /** The result of the last Assemble press (errors stay until the next edit). */
+  const [lastAssembly, setLastAssembly] = useState<AssemblyResult | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const [showHelp, setShowHelp] = useState(false);
-  const fractalCleanupRef = React.useRef<(() => void) | null>(null);
+  const [showAbout, setShowAbout] = useState(false);
+  const [hostDemo, setHostDemo] = useState(false);
+  const [electronVersions, setElectronVersions] = useState<ElectronVersions | null>(null);
+  const fractalCleanupRef = useRef<(() => void) | null>(null);
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
 
-  // Auto-assemble the initial program once computer is ready
-  useEffect(() => {
-    if (computer.isReady) {
-      const result = assemble(SAMPLE_PROGRAMS.add.code);
-      if (result.success) computer.loadProgram(result.bytes);
-    }
-  }, [computer.isReady]);
+  const original = SAMPLE_PROGRAMS[activeProgram]?.code ?? '';
+  const hasEdits = editorCode !== original;
+  const editorStatus: 'loaded' | 'modified' | 'not-loaded' =
+    !loaded ? 'not-loaded' : loaded.source === editorCode ? 'loaded' : 'modified';
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
-      switch (e.key.toLowerCase()) {
-        case 's': computer.step(); break;
-        case 'b': computer.stepBack(); break;
-        case 'r': computer.run(); break;
-        case 'p': computer.pause(); break;
-        case 'escape': computer.pause(); setShowHelp(false); break;
-        case '?': setShowHelp(v => !v); break;
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [computer]);
-
-  // Electron menu commands (F5/F6/F10)
-  useEffect(() => {
-    const api = (window as any).electronAPI;
-    if (api?.onMenuCommand) {
-      api.onMenuCommand((cmd: string) => {
-        switch (cmd) {
-          case 'step': computer.step(); break;
-          case 'stepback': computer.stepBack(); break;
-          case 'run': computer.run(); break;
-          case 'pause': computer.pause(); break;
-          case 'reset': computer.reset(); break;
-        }
-      });
-    }
-  }, [computer]);
-
-  const handleLoadProgram = (key: string) => {
-    // Stop any running fractal zoom animation
+  const stopHostDemo = useCallback(() => {
     if (fractalCleanupRef.current) {
       fractalCleanupRef.current();
       fractalCleanupRef.current = null;
     }
-    computer.pause();
+    setHostDemo(false);
+  }, []);
 
-    const prog = SAMPLE_PROGRAMS[key];
-    if (!prog) return;
-    setActiveProgram(key);
-    setEditorCode(prog.code);
-    if (prog.bytes.length > 0) {
-      computer.loadProgram(prog.bytes);
-    } else {
-      const result = assemble(prog.code);
-      if (result.success) computer.loadProgram(result.bytes);
-    }
-
-    // Special: start JS fractal zoom animation
+  const startHostDemoIfAny = useCallback((key: string) => {
     if (key === 'fractal_zoom') {
       fractalCleanupRef.current = startFractalZoom(computer.pokeRaw, computer.refresh);
+      setHostDemo(true);
     }
+  }, [computer.pokeRaw, computer.refresh]);
+
+  /** Assemble `code` and load it into RAM. Breakpoints survive only a reload of the same bytes. */
+  const assembleAndLoad = useCallback((code: string): AssemblyResult => {
+    const result = assemble(code);
+    setLastAssembly(result);
+    if (!result.success) return result;
+    stopHostDemo();
+    const prev = loadedRef.current;
+    const same = !!prev && sameBytes(prev.result.bytes, result.bytes);
+    computer.loadProgram(result.bytes, { keepBreakpoints: same });
+    setLoaded({ source: code, result });
+    return result;
+  }, [computer.loadProgram, stopHostDemo]);
+
+  // Load the initial program once the engine is ready.
+  useEffect(() => {
+    if (!computer.isReady) return;
+    const r = assembleAndLoad(initial.code);
+    if (!r.success && initial.code !== SAMPLE_PROGRAMS[initial.key].code) {
+      // The restored edits don't assemble: run the original, keep the edits in the editor.
+      const orig = SAMPLE_PROGRAMS[initial.key].code;
+      const ok = assemble(orig);
+      if (ok.success) {
+        computer.loadProgram(ok.bytes);
+        setLoaded({ source: orig, result: ok });
+      }
+    } else if (r.success && initial.code === SAMPLE_PROGRAMS[initial.key].code) {
+      startHostDemoIfAny(initial.key);
+    }
+  }, [computer.isReady]);
+
+  useEffect(() => () => stopHostDemo(), [stopHostDemo]);
+
+  const onEditorChange = useCallback((text: string) => {
+    setEditorCode(text);
+    setLastAssembly(null);
+    saveEdits(activeProgram, text, SAMPLE_PROGRAMS[activeProgram]?.code ?? '');
+  }, [activeProgram]);
+
+  const openSample = useCallback((key: string) => {
+    const prog = SAMPLE_PROGRAMS[key];
+    if (!prog) return;
+    stopHostDemo();
+    computer.pause();
+    clearEdits(activeProgram);
+    clearEdits(key);
+    setActiveProgram(key);
+    saveActiveSample(key);
+    setEditorCode(prog.code);
+    const r = assembleAndLoad(prog.code);
+    if (r.success) startHostDemoIfAny(key);
+  }, [activeProgram, assembleAndLoad, computer.pause, stopHostDemo, startHostDemoIfAny]);
+
+  const requestSample = useCallback((key: string) => {
+    if (hasEdits) setPending({ kind: 'sample', key });
+    else openSample(key);
+  }, [hasEdits, openSample]);
+
+  const revert = useCallback(() => {
+    clearEdits(activeProgram);
+    setEditorCode(original);
+    assembleAndLoad(original);
+  }, [activeProgram, original, assembleAndLoad]);
+
+  const confirmPending = () => {
+    const p = pending;
+    setPending(null);
+    if (!p) return;
+    if (p.kind === 'sample') openSample(p.key);
+    else revert();
   };
+
+  // Actions that end the host demo first.
+  const doStep = useCallback(() => { stopHostDemo(); computer.step(); }, [computer.step, stopHostDemo]);
+  const doRun = useCallback(() => { stopHostDemo(); computer.run(); }, [computer.run, stopHostDemo]);
+  const doReset = useCallback(() => { stopHostDemo(); computer.reset(); }, [computer.reset, stopHostDemo]);
+  const doWipe = useCallback(() => {
+    stopHostDemo();
+    computer.hardReset();
+    computer.clearBreakpoints();
+    setLoaded(null); // the program is gone from RAM
+  }, [computer.hardReset, computer.clearBreakpoints, stopHostDemo]);
+
+  const modalOpen = showHelp || showAbout || !!pending;
+
+  // Handlers read through a ref so the key and menu listeners register once.
+  const handlersRef = useRef<Record<string, () => void>>({});
+  handlersRef.current = {
+    step: doStep,
+    stepback: computer.stepBack,
+    run: doRun,
+    pause: computer.pause,
+    reset: doReset,
+    wipe: doWipe,
+    help: () => setShowHelp(true),
+    about: () => setShowAbout(true),
+  };
+  const modalOpenRef = useRef(modalOpen);
+  modalOpenRef.current = modalOpen;
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (modalOpenRef.current) return;
+      const action = shortcutFor(e);
+      if (!action) return;
+      if (action === 'help') {
+        e.preventDefault();
+        setShowHelp(true);
+        return;
+      }
+      handlersRef.current[action]?.();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Electron menu commands (F5/F6/F8/F9/F10, About). Registered once.
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api) return;
+    try { setElectronVersions(api.getVersions?.() ?? null); } catch { /* older preload */ }
+    const off = api.onMenuCommand?.((cmd: string) => {
+      if (modalOpenRef.current && cmd !== 'about') return;
+      handlersRef.current[cmd]?.();
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, []);
 
   if (!computer.isReady) {
     return (
@@ -412,55 +478,58 @@ export default function App() {
 
   const state = computer.state;
   const isHalted = state?.halted ?? false;
-  const isRunning = computer.isRunning;
-  const statusColor = isRunning ? 'var(--accent-green)' : isHalted ? 'var(--accent-red)' : 'var(--accent-amber)';
-  const statusText = isRunning ? 'Running' : isHalted ? 'Halted' : 'Ready';
+  const status = statusFor(computer);
+  const sample = SAMPLE_PROGRAMS[activeProgram];
+  const showExpect = isHalted && !computer.fault && editorStatus === 'loaded' && loaded?.source === sample?.code;
+  const engineLabel = computer.engineType === 'wasm' ? 'WASM (Rust)' : 'JavaScript';
 
   return (
     <div style={styles.app}>
       <style>{GLOBAL_CSS}</style>
 
       {/* Header */}
-      <div style={styles.header}>
+      <header style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{
+          <div aria-hidden="true" style={{
             width: 26, height: 26, borderRadius: 6,
             background: 'linear-gradient(135deg, #38bdf8, #818cf8)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 12, fontWeight: 800, color: '#fff',
             boxShadow: '0 0 16px rgba(56,189,248,0.2)',
           }}>GS</div>
-          <span style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff' }}>
+          <h1 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff', margin: 0 }}>
             Gate<span style={{ color: 'var(--accent-blue)', fontWeight: 800 }}>Stack</span>
-          </span>
+          </h1>
           <span style={{
-            fontSize: '0.6rem', color: 'var(--text-muted)',
+            fontSize: '0.6875rem', color: 'var(--text-muted)',
             fontFamily: 'var(--font-mono)', marginLeft: 2,
-          }}>v2.0 · 32-bit CPU</span>
+          }}>v{APP_VERSION} · ISA v2 · 32-bit CPU</span>
         </div>
 
-        {/* Program selector dropdown */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{
             fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)',
             fontFamily: 'var(--font-ui)',
           }}>Samples:</span>
-          <SampleDropdown
-            activeProgram={activeProgram}
-            onSelect={handleLoadProgram}
-          />
+          <SampleDropdown activeProgram={activeProgram} onSelect={requestSample} />
         </div>
-      </div>
+      </header>
 
       {/* Main */}
-      <div style={styles.main}>
+      <main style={styles.main}>
         <div style={styles.toolbarRow}>
-          <Toolbar computer={computer} />
+          <Toolbar
+            computer={computer}
+            onStep={doStep}
+            onRun={doRun}
+            onReset={doReset}
+            onWipe={doWipe}
+          />
         </div>
 
         <div style={styles.leftPanel}>
-          <CpuView state={state} trace={computer.trace} />
-          <AluView trace={computer.trace} />
+          <CpuView state={state} prevState={computer.prevState} trace={computer.trace} />
+          <AluView trace={computer.trace} isRunning={computer.isRunning} />
           <SignalTrace history={computer.traceHistory} />
         </div>
 
@@ -468,54 +537,101 @@ export default function App() {
           <BusView state={state} trace={computer.trace} />
           <CodeEditor
             code={editorCode}
-            onChange={setEditorCode}
+            onChange={onEditorChange}
+            onAssemble={() => assembleAndLoad(editorCode)}
+            loadedResult={loaded?.result ?? null}
+            lastAssembly={lastAssembly}
+            status={editorStatus}
             currentAddress={state?.iar ?? 0}
-            onLoadBytes={(bytes: number[]) => computer.loadProgram(bytes)}
             breakpoints={computer.breakpoints}
             onToggleBreakpoint={computer.toggleBreakpoint}
+            sampleName={sample?.name ?? 'this sample'}
+            canRevert={hasEdits}
+            onRevert={() => setPending({ kind: 'revert' })}
           />
         </div>
 
         <div style={styles.rightPanel}>
-          <MemoryView memory={computer.memory} memoryVersion={computer.memoryVersion} currentAddress={state?.iar ?? 0} onPoke={computer.poke} />
-          <VideoView memory={computer.memory} memoryVersion={computer.memoryVersion} isRunning={computer.isRunning} />
+          <MemoryView
+            memory={computer.memory}
+            memoryVersion={computer.memoryVersion}
+            currentAddress={state?.iar ?? 0}
+            onPoke={computer.poke}
+            labels={loaded?.result.labels ?? null}
+          />
+          <VideoView
+            memory={computer.memory}
+            memoryVersion={computer.memoryVersion}
+            isRunning={computer.isRunning || hostDemo}
+            hostDemo={hostDemo}
+          />
           <ConsoleView
+            key={activeProgram}
             output={computer.consoleOutput}
             onClear={computer.clearConsole}
             waitingForInput={computer.waitingForInput}
             onSubmitInput={computer.submitInput}
+            defaultInputMode={activeProgram === 'echo' ? 'char' : 'number'}
           />
         </div>
-      </div>
+      </main>
 
       {/* Status Bar */}
-      <div style={styles.statusBar}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <div style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: statusColor,
-            boxShadow: `0 0 6px color-mix(in srgb, ${statusColor} 60%, transparent)`,
+      <footer style={styles.statusBar} role="status" aria-live="polite">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+          <div aria-hidden="true" style={{
+            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+            background: status.color,
+            boxShadow: `0 0 6px color-mix(in srgb, ${status.color} 60%, transparent)`,
           }} />
-          <span style={{ color: statusColor, fontWeight: 600 }}>{statusText}</span>
+          <span style={{
+            color: status.color, fontWeight: 600,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'text',
+          }} title={status.text}>{status.text}</span>
         </div>
         <span>Cycle <span style={{ color: 'var(--text-secondary)' }}>{state?.cycle_count ?? 0}</span></span>
-        <span>PC <span style={{ color: 'var(--text-secondary)' }}>0x{(state?.iar ?? 0).toString(16).padStart(6, '0').toUpperCase()}</span></span>
-        <span>SP <span style={{ color: 'var(--text-secondary)' }}>0x{(state?.sp ?? 0).toString(16).padStart(6, '0').toUpperCase()}</span></span>
+        <span>PC <span style={{ color: 'var(--text-secondary)' }}>{hex6(state?.iar ?? 0)}</span></span>
+        <span>SP <span style={{ color: 'var(--text-secondary)' }}>{hex6(state?.sp ?? 0)}</span></span>
+        <span title={computer.engineNote ? `JavaScript engine because ${computer.engineNote}` : undefined}>
+          Engine <span style={{ color: computer.engineNote ? 'var(--accent-amber)' : 'var(--text-secondary)' }}>
+            {engineLabel}{computer.engineNote ? ' (WASM unavailable)' : ''}
+          </span>
+        </span>
         <div style={{ flex: 1 }} />
-        {isHalted && (
-          <span style={{ color: 'var(--accent-green)', fontWeight: 600, fontSize: '0.7rem' }}>
-            ✓ {SAMPLE_PROGRAMS[activeProgram]?.expect}
+        {showExpect && sample?.expect && (
+          <span style={{ color: 'var(--accent-green)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+            Expected: {sample.expect}
           </span>
         )}
-        <span>Steps <span style={{ color: 'var(--text-secondary)' }}>{computer.traceHistory.length}/64</span></span>
-        <button onClick={() => setShowHelp(true)} style={{
-          background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 4,
-          color: 'var(--text-muted)', cursor: 'pointer', padding: '0 6px', fontSize: '0.7rem',
-          fontWeight: 700, fontFamily: 'var(--font-ui)', lineHeight: '18px',
-        }} title="Help & ISA Reference">?</button>
-      </div>
+        <span title="Undo history (Step Back)">History <span style={{ color: 'var(--text-secondary)' }}>{computer.traceHistory.length}/64</span></span>
+        <button onClick={() => setShowAbout(true)} aria-label="About GateStack" title="About GateStack" style={statusBtn}>i</button>
+        <button onClick={() => setShowHelp(true)} aria-label="Help and ISA reference" title="Help & ISA Reference (?)" style={statusBtn}>?</button>
+      </footer>
 
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      {showAbout && (
+        <AboutDialog
+          onClose={() => setShowAbout(false)}
+          engine={computer.engineNote ? `${engineLabel} (WASM unavailable: ${computer.engineNote})` : engineLabel}
+          versions={electronVersions}
+        />
+      )}
+      {pending && (
+        <DiscardDialog
+          sampleName={sample?.name ?? 'this sample'}
+          action={pending.kind === 'sample'
+            ? `opens ${SAMPLE_PROGRAMS[pending.key]?.name ?? 'the sample'}`
+            : 'puts the original program back'}
+          onDiscard={confirmPending}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }
+
+const statusBtn: React.CSSProperties = {
+  background: 'none', border: '1px solid var(--border-default)', borderRadius: 4,
+  color: 'var(--text-muted)', cursor: 'pointer', padding: '0 6px', fontSize: '0.7rem',
+  fontWeight: 700, fontFamily: 'var(--font-ui)', lineHeight: '18px',
+};

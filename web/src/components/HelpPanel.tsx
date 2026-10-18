@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useRef, useId } from 'react';
+import { APP_VERSION } from './Modal';
 
 interface Props {
   onClose: () => void;
@@ -22,18 +23,18 @@ const S: Record<string, React.CSSProperties> = {
   th: {
     textAlign: 'left' as const, padding: '3px 8px', fontWeight: 700,
     borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)',
-    fontSize: '0.62rem', textTransform: 'uppercase' as const, letterSpacing: '0.5px',
+    fontSize: '0.6875rem', textTransform: 'uppercase' as const, letterSpacing: '0.5px',
   },
   td: {
     padding: '3px 8px', borderBottom: '1px solid var(--border-subtle, #1e293b)',
     fontFamily: 'var(--font-mono)', fontSize: '0.7rem',
   },
   mono: { fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', fontWeight: 600 },
-  dim: { color: 'var(--text-dim)', fontSize: '0.68rem' },
+  dim: { color: 'var(--text-dim)', fontSize: '0.6875rem' },
   kbd: {
     display: 'inline-block', padding: '1px 5px', borderRadius: 3,
     background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-    fontFamily: 'var(--font-mono)', fontSize: '0.62rem', fontWeight: 600,
+    fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', fontWeight: 600,
     color: 'var(--text-secondary)',
   },
 };
@@ -50,7 +51,7 @@ const ISA_CATEGORIES: Array<{ label: string; rows: string[][] }> = [
     ['MUL rA, rB', '0x03', 'rA = rA × rB (low 32 bits)'],
     ['DIV rA, rB', '0x04', 'rA = rA ÷ rB (unsigned)'],
     ['MOD rA, rB', '0x05', 'rA = rA % rB (unsigned)'],
-    ['CMP rA, rB', '0x0C', 'Compare — sets flags only'],
+    ['CMP rA, rB', '0x0C', 'Flags as for rA − rB, nothing stored: Z if rA = rB, C if rA < rB (unsigned), A if rA > rB, E if equal'],
   ]},
   { label: 'Bitwise & Shifts', rows: [
     ['NOT rA', '0x08', 'rA = ~rA'],
@@ -84,7 +85,8 @@ const ISA_CATEGORIES: Array<{ label: string; rows: string[][] }> = [
     ['MULH rA, rB', '0x0D', 'rA = (rA × rB) >> 32 (high 32)'],
     ['IDIV rA, rB', '0x29', 'rA = rA ÷ rB (signed)'],
     ['IMOD rA, rB', '0x2A', 'rA = rA % rB (signed)'],
-    ['FPMUL rA, rB', '0x2B', 'rA = (rA × rB) >> 8 (fixed-point 8.8)'],
+    ['FPMUL rA, rB', '0x2B', 'rA = (rA × rB) >> 8 (signed fixed-point 8.8)'],
+    ['FPMUL16 rA, rB', '0x2C', 'rA = (rA × rB) >> 16 (signed fixed-point 16.16)'],
   ]},
   { label: 'Advanced Shifts', rows: [
     ['SHR8 rA', '0x0F', 'rA = rA >> 8'],
@@ -113,26 +115,40 @@ const KEYS = [
   ['R', 'Run (continuous)'],
   ['P / Esc', 'Pause'],
   ['Ctrl+Enter', 'Assemble code'],
-  ['F5', 'Run (Electron)'],
-  ['F9', 'Step back (Electron)'],
-  ['F10', 'Step (Electron)'],
+  ['Tab', 'Indent in the editor (Shift+Tab leaves it)'],
+  ['F5 / F6', 'Run / Pause (desktop app)'],
+  ['F8', 'Reset CPU (desktop app)'],
+  ['F9 / F10', 'Step back / Step (desktop app)'],
 ];
 
 export default function HelpPanel({ onClose }: Props) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => { prev?.focus?.(); };
+  }, []);
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.panel} onClick={e => e.stopPropagation()}>
+    // Closes only through the Close button or Escape, never on a backdrop click.
+    <div style={S.overlay} onKeyDown={e => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab') { e.preventDefault(); closeRef.current?.focus(); }
+    }}>
+      <div style={S.panel} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <h2 style={{ ...S.h2, margin: 0 }}>GateStack · Quick Reference</h2>
-          <button onClick={onClose} style={{
+          <h2 id={titleId} style={{ ...S.h2, margin: 0 }}>GateStack v{APP_VERSION} · Quick Reference</h2>
+          <button ref={closeRef} onClick={onClose} style={{
             background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 4,
             color: 'var(--text-dim)', cursor: 'pointer', padding: '2px 8px', fontSize: '0.7rem',
           }}>✕ Close</button>
         </div>
 
         <p style={{ ...S.dim, marginBottom: 12, lineHeight: 1.5 }}>
-          32-bit CPU with 16 registers (R0–R15), 4MB RAM, stack, and {TOTAL_INSTRUCTIONS} instructions.
+          32-bit CPU (ISA v2) with 16 registers (R0–R15), 4MB RAM, stack, and {TOTAL_INSTRUCTIONS} instructions.
           Write assembly in the editor, press Ctrl+Enter to assemble, then Step or Run.
+          Your edits are saved in this browser; the editor shows when they differ from the program in RAM.
         </p>
 
         <h3 style={S.h3}>Instruction Set</h3>
@@ -149,7 +165,7 @@ export default function HelpPanel({ onClose }: Props) {
               <React.Fragment key={ci}>
                 <tr>
                   <td colSpan={3} style={{
-                    padding: '6px 8px 2px', fontSize: '0.6rem', fontWeight: 700,
+                    padding: '6px 8px 2px', fontSize: '0.6875rem', fontWeight: 700,
                     color: 'var(--accent-blue)', textTransform: 'uppercase',
                     letterSpacing: '0.8px', borderBottom: '1px solid var(--border-subtle)',
                     background: 'rgba(59,130,246,0.05)',
@@ -158,7 +174,7 @@ export default function HelpPanel({ onClose }: Props) {
                 {cat.rows.map(([instr, op, desc], i) => (
                   <tr key={`${ci}-${i}`}>
                     <td style={{ ...S.td, ...S.mono, whiteSpace: 'nowrap' }}>{instr}</td>
-                    <td style={{ ...S.td, color: 'var(--text-dim)', fontSize: '0.62rem' }}>{op}</td>
+                    <td style={{ ...S.td, color: 'var(--text-dim)', fontSize: '0.6875rem' }}>{op}</td>
                     <td style={{ ...S.td, color: 'var(--text-secondary)' }}>{desc}</td>
                   </tr>
                 ))}
@@ -185,7 +201,8 @@ export default function HelpPanel({ onClose }: Props) {
             <h3 style={S.h3}>Tips</h3>
             <ul style={{ ...S.dim, lineHeight: 1.8, paddingLeft: 16, margin: 0 }}>
               <li>Click the <b>gutter</b> (left of line numbers) to toggle breakpoints</li>
-              <li>Click any <b>RAM cell</b> to edit its value directly</li>
+              <li>Click any <b>RAM cell</b> to edit it; values are hex (<span style={S.mono}>#65</span> decimal, <span style={S.mono}>'A'</span> char)</li>
+              <li><b>Reset CPU</b> keeps RAM; <b>Wipe RAM</b> clears it, program included</li>
               <li>Use <b>OUT rA</b> to print to the console panel</li>
               <li>Use <b>IN rA</b> to pause and read user input</li>
               <li>Labels: <span style={S.mono}>loop: JMP loop</span></li>
@@ -199,9 +216,9 @@ export default function HelpPanel({ onClose }: Props) {
         <div style={{
           marginTop: 16, paddingTop: 12,
           borderTop: '1px solid var(--border-subtle)',
-          fontSize: '0.68rem', color: 'var(--text-dim)', lineHeight: 1.7,
+          fontSize: '0.6875rem', color: 'var(--text-dim)', lineHeight: 1.7,
         }}>
-          <span style={{ fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' as const, fontSize: '0.6rem' }}>
+          <span style={{ fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' as const, fontSize: '0.6875rem' }}>
             Inspired by
           </span>
           <div style={{ marginTop: 4 }}>

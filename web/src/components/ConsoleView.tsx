@@ -1,18 +1,23 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { parseConsoleInput, InputMode } from '../hooks/consoleInput';
 
 interface Props {
   output: number[];
   onClear: () => void;
   waitingForInput: { register: number } | null;
   onSubmitInput: (value: number, displayText?: string) => void;
+  /** How typed input is read; Echo starts in character mode. */
+  defaultInputMode?: InputMode;
 }
 
-export default function ConsoleView({ output, onClear, waitingForInput, onSubmitInput }: Props) {
+export default function ConsoleView({ output, onClear, waitingForInput, onSubmitInput, defaultInputMode = 'number' }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<'ascii' | 'hex' | 'dec'>('ascii');
   const [inputText, setInputText] = useState('');
   const [copied, setCopied] = useState(false);
+  const [inputMode, setInputMode] = useState<InputMode>(defaultInputMode);
+  const [inputError, setInputError] = useState<string | null>(null);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -29,17 +34,14 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
   }, [waitingForInput]);
 
   const handleInputSubmit = () => {
-    const t = inputText.trim();
-    let val: number | null = null;
-    if (/^0[xX][0-9a-fA-F]+$/.test(t)) val = parseInt(t, 16);
-    else if (/^\d+$/.test(t)) val = parseInt(t, 10);
-    else if (t.length === 1) val = t.charCodeAt(0);
-    else if (t.length === 3 && t[0] === "'" && t[2] === "'") val = t.charCodeAt(1);
-
-    if (val !== null && val >= 0 && val <= 65535) {
-      onSubmitInput(val, t);
-      setInputText('');
+    const parsed = parseConsoleInput(inputText, inputMode);
+    if (!parsed.ok) {
+      setInputError(parsed.error);
+      return;
     }
+    setInputError(null);
+    onSubmitInput(parsed.value, inputMode === 'char' ? inputText : inputText.trim());
+    setInputText('');
   };
 
   const renderOutput = () => {
@@ -102,7 +104,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
         marginBottom: 6, flexShrink: 0,
       }}>
         <div style={{
-          fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted)',
+          fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-muted)',
           textTransform: 'uppercase' as const, letterSpacing: '1px',
           display: 'flex', alignItems: 'center', gap: 6,
         }}>
@@ -110,7 +112,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
           Console
           {output.length > 0 && (
             <span style={{
-              fontSize: '0.58rem', color: 'var(--text-dim)', fontWeight: 400,
+              fontSize: '0.6875rem', color: 'var(--text-dim)', fontWeight: 400,
               fontFamily: 'var(--font-mono)',
             }}>
               {output.length}B
@@ -118,7 +120,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
           )}
           {waitingForInput && (
             <span style={{
-              fontSize: '0.58rem', color: '#3b82f6', fontWeight: 600,
+              fontSize: '0.6875rem', color: '#3b82f6', fontWeight: 600,
               padding: '0 4px', background: 'rgba(59,130,246,0.1)',
               borderRadius: 3, border: '1px solid rgba(59,130,246,0.3)',
               animation: 'inputPulse 1.5s ease-in-out infinite',
@@ -131,7 +133,7 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {(['ascii', 'hex', 'dec'] as const).map(m => (
             <button key={m} onClick={() => setMode(m)} style={{
-              fontSize: '0.58rem', fontWeight: 600,
+              fontSize: '0.6875rem', fontWeight: 600,
               padding: '1px 6px', borderRadius: 3, border: 'none', cursor: 'pointer',
               fontFamily: 'var(--font-mono)',
               background: mode === m ? 'var(--accent-blue)' : 'var(--bg-elevated)',
@@ -148,27 +150,47 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
                   if (v >= 32 && v <= 126) return String.fromCharCode(v);
                   return `\\x${v.toString(16).padStart(2, '0')}`;
                 }).join('');
-                navigator.clipboard.writeText(text);
+                navigator.clipboard?.writeText(text).catch(() => { /* clipboard blocked */ });
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               }} style={{
-                fontSize: '0.55rem', fontWeight: 600, marginLeft: 4,
+                fontSize: '0.6875rem', fontWeight: 600, marginLeft: 4,
                 padding: '1px 6px', borderRadius: 3, cursor: 'pointer',
                 background: copied ? 'rgba(34,197,94,0.15)' : 'transparent',
                 color: copied ? '#22c55e' : 'var(--text-dim)',
                 border: `1px solid ${copied ? 'rgba(34,197,94,0.4)' : 'var(--border-subtle)'}`,
                 transition: 'all 0.2s',
-              }} title="Copy to clipboard">{copied ? '✓' : '⎘'}</button>
+              }} title="Copy output to clipboard" aria-label="Copy output to clipboard">{copied ? '✓' : '⎘'}</button>
               <button onClick={onClear} style={{
-                fontSize: '0.55rem', fontWeight: 600,
+                fontSize: '0.6875rem', fontWeight: 600,
                 padding: '1px 6px', borderRadius: 3, cursor: 'pointer',
                 background: 'transparent', color: 'var(--text-dim)',
                 border: '1px solid var(--border-subtle)',
-              }} title="Clear console">✕</button>
+              }} title="Clear console" aria-label="Clear console">✕</button>
             </>
           )}
         </div>
       </div>
+
+      {waitingForInput && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+          <span id="console-input-mode">Input as</span>
+          <div role="radiogroup" aria-labelledby="console-input-mode" style={{ display: 'flex', gap: 2 }}>
+            {(['number', 'char'] as const).map(m => (
+              <button key={m} role="radio" aria-checked={inputMode === m}
+                onClick={() => { setInputMode(m); setInputError(null); inputRef.current?.focus(); }}
+                title={m === 'number' ? "Decimal (negative allowed), 0x hex, 0b binary or 'A'" : 'One character; its code goes into the register'}
+                style={{
+                  fontSize: '0.6875rem', fontWeight: 600, padding: '1px 6px', borderRadius: 3, cursor: 'pointer',
+                  border: '1px solid var(--border-default)',
+                  background: inputMode === m ? 'var(--accent-blue)' : 'var(--bg-elevated)',
+                  color: inputMode === m ? '#fff' : 'var(--text-muted)',
+                }}>{m === 'number' ? 'Number' : 'Character'}</button>
+            ))}
+          </div>
+          <span>· Enter to send</span>
+        </div>
+      )}
 
       {/* Output area */}
       <div ref={scrollRef} style={{
@@ -190,21 +212,20 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
         {/* Terminal-style input line when waiting */}
         {waitingForInput && (
           <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <span style={{ color: '#3b82f6', fontWeight: 700, marginRight: 4 }}>
-              {'>'} 
-            </span>
             <input
               ref={inputRef}
               value={inputText}
-              onChange={e => setInputText(e.target.value)}
+              onChange={e => { setInputText(e.target.value); setInputError(null); }}
+              aria-label={`Input for R${waitingForInput.register} (${inputMode === 'char' ? 'one character' : 'a number'})`}
+              aria-invalid={!!inputError}
               onKeyDown={e => {
                 if (e.key === 'Enter') handleInputSubmit();
               }}
-              placeholder="0-65535"
+              placeholder={inputMode === 'char' ? 'a character' : 'number, e.g. 42 or -7'}
               style={{
                 background: 'transparent', border: 'none', outline: 'none',
                 color: '#93c5fd', fontFamily: 'var(--font-mono)',
-                fontSize: '0.82rem', width: 80, padding: 0,
+                fontSize: '0.82rem', width: 170, padding: 0,
                 caretColor: '#3b82f6',
               }}
             />
@@ -214,6 +235,11 @@ export default function ConsoleView({ output, onClear, waitingForInput, onSubmit
               marginLeft: -2,
             }} />
           </span>
+        )}
+        {waitingForInput && inputError && (
+          <div role="alert" style={{ color: 'var(--accent-red)', fontSize: '0.75rem', marginTop: 2, fontFamily: 'var(--font-ui)' }}>
+            {inputError}
+          </div>
         )}
 
         {/* Blinking cursor when not waiting and has output */}

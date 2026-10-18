@@ -18,12 +18,12 @@ const ANIM_STYLES = `
 // Full descriptions for each component
 const TOOLTIPS: Record<string, { full: string; desc: string }> = {
   'IAR': { full: 'Instruction Address Register', desc: 'Holds the address of the next instruction (Program Counter)' },
-  'IR':  { full: 'Instruction Register', desc: 'Holds the instruction currently being decoded and executed' },
+  'IR':  { full: 'Instruction Register', desc: 'Holds the opcode of the instruction being executed (fetched from RAM)' },
   'REGS': { full: 'Register File (R0–R15)', desc: '16 general-purpose 32-bit registers' },
   'MAR': { full: 'Memory Address Register', desc: 'Selects which RAM address to read or write (22-bit)' },
-  'ALU': { full: 'Arithmetic Logic Unit', desc: 'Performs ADD, AND, OR, XOR, NOT, SHL, SHR, CMP operations' },
-  'ACC': { full: 'Accumulator', desc: 'Stores the result of the last ALU operation' },
-  'TMP': { full: 'Temporary Register', desc: 'Internal register holding the second ALU operand' },
+  'ALU': { full: 'Arithmetic Logic Unit', desc: 'Computes TMP op ACC (ADD, SUB, AND, CMP...) and sends the result back to the register' },
+  'ACC': { full: 'Accumulator', desc: 'Holds the second ALU operand (rB) while an ALU instruction executes' },
+  'TMP': { full: 'Temporary Register', desc: 'Holds the first ALU operand (rA) while an ALU instruction executes' },
   'RAM': { full: 'Random Access Memory', desc: '4MB of storage for programs, data, and video' },
   'SP':  { full: 'Stack Pointer', desc: 'Points to top of stack, starts at 0x3BFFFF, grows downward' },
 };
@@ -56,8 +56,6 @@ export default function BusView({ state, trace }: Props) {
     setTooltip(prev => ({ ...prev, visible: false }));
   }, []);
 
-  if (!state) return null;
-
   const activeTransfers = useMemo(() => {
     return trace?.steps?.filter(s => 'BusTransfer' in s)?.map(s => (s as any).BusTransfer!) ?? [];
   }, [trace]);
@@ -71,23 +69,30 @@ export default function BusView({ state, trace }: Props) {
 
   const marValue = useMemo(() => {
     const t = [...activeTransfers].reverse().find(t => t.dest === 'MAR');
-    return t?.value ?? state.iar;
-  }, [activeTransfers, state.iar]);
+    return t?.value ?? state?.iar ?? 0;
+  }, [activeTransfers, state?.iar]);
 
   const ramValue = useMemo(() => {
     const t = [...activeTransfers].reverse().find(t => t.dest === 'RAM' || t.source === 'RAM');
     return t?.value ?? 0;
   }, [activeTransfers]);
 
+  // Hooks above this line run on every render (React requires a fixed hook order).
+  if (!state) return null;
+
+  const lastTo = (dest: string) => [...activeTransfers].reverse().find(t => t.dest === dest)?.value;
+  const alu = trace?.steps?.find(s => s.AluOperation)?.AluOperation;
+  const fetched = trace?.steps?.find(s => s.FetchInstruction)?.FetchInstruction?.value;
+
   const components = [
     { id: 'IAR', x: 10, y: 15, color: '#f59e0b', value: state.iar },
-    { id: 'IR',  x: 140, y: 15, color: '#f59e0b', value: state.ir },
+    { id: 'IR',  x: 140, y: 15, color: '#f59e0b', value: fetched ?? 0 },
     { id: 'REGS', x: 270, y: 15, color: '#3b82f6', value: regsValue },
     { id: 'SP',  x: 400, y: 15, color: '#22c55e', value: state.sp },
     { id: 'MAR', x: 530, y: 15, color: '#ef4444', value: marValue },
-    { id: 'ALU', x: 50,  y: 175, color: '#a855f7', value: state.acc },
-    { id: 'ACC', x: 195, y: 175, color: '#14b8a6', value: state.acc },
-    { id: 'TMP', x: 340, y: 175, color: '#64748b', value: state.tmp },
+    { id: 'ALU', x: 50,  y: 175, color: '#a855f7', value: alu?.result.value ?? 0 },
+    { id: 'ACC', x: 195, y: 175, color: '#14b8a6', value: lastTo('ACC') ?? 0 },
+    { id: 'TMP', x: 340, y: 175, color: '#94a3b8', value: lastTo('TMP') ?? 0 },
     { id: 'RAM', x: 490, y: 175, color: '#ef4444', value: ramValue },
   ];
 
@@ -104,7 +109,7 @@ export default function BusView({ state, trace }: Props) {
     <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle, #1e293b)', minHeight: '190px', position: 'relative' }}>
       <style>{ANIM_STYLES}</style>
       <div style={{
-        fontSize: '0.68rem', fontWeight: 700, marginBottom: '6px',
+        fontSize: '0.6875rem', fontWeight: 700, marginBottom: '6px',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <div style={{
@@ -114,17 +119,22 @@ export default function BusView({ state, trace }: Props) {
           <div style={{ width: 3, height: 12, borderRadius: 2, background: '#f59e0b' }} />
           Data Bus
         </div>
+        {!trace && (
+          <span style={{ fontWeight: 400, fontSize: '0.6875rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            Step to see each transfer on the bus
+          </span>
+        )}
         {trace?.opcode && (
           <span style={{ fontWeight: 400, fontSize: '0.72rem' }}>
             <span style={{ color: '#a78bfa', fontWeight: 600 }}>{trace.opcode}</span>
-            <span style={{ color: '#64748b' }}> {trace.reg_a},{trace.reg_b}</span>
-            <span style={{ color: '#475569' }}> @ 0x{trace.address.toString(16).padStart(6, '0').toUpperCase()}</span>
+            <span style={{ color: 'var(--text-muted)' }}> {trace.reg_a},{trace.reg_b}</span>
+            <span style={{ color: 'var(--text-muted)' }}> @ 0x{trace.address.toString(16).padStart(6, '0').toUpperCase()}</span>
           </span>
         )}
       </div>
 
       <div style={{ position: 'relative' }}>
-        <svg viewBox="0 0 640 240" style={{ width: '100%', maxHeight: '240px' }}>
+        <svg viewBox="0 0 640 240" style={{ width: '100%', maxHeight: '240px' }} role="img" aria-label="Data bus between CPU parts and RAM">
           {/* Main bus line */}
           <rect x="8" y="106" width="624" height="8" rx="4"
             fill="#1e293b" stroke="#334155" strokeWidth="0.5" />
@@ -133,7 +143,7 @@ export default function BusView({ state, trace }: Props) {
               fill="#ef4444" opacity="0.15"
               style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           )}
-          <text x="320" y="103" textAnchor="middle" fill="#8b95a8" fontSize="8">
+          <text x="320" y="103" textAnchor="middle" fill="#9aa8bc" fontSize="14">
             BUS
           </text>
 
@@ -191,15 +201,15 @@ export default function BusView({ state, trace }: Props) {
 
                 {/* Label */}
                 <text x={cx} y={comp.y + 15} textAnchor="middle"
-                  fill={active ? '#fff' : '#8b95a8'}
-                  fontSize="11" fontWeight="bold" pointerEvents="none">
+                  fill={active ? '#fff' : '#b8c4d4'}
+                  fontSize="14" fontWeight="bold" pointerEvents="none">
                   {comp.id}
                 </text>
 
                 {/* Value */}
-                <text x={cx} y={comp.y + 30} textAnchor="middle"
-                  fill={active ? comp.color : '#718096'}
-                  fontSize="8" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
+                <text x={cx} y={comp.y + 31} textAnchor="middle"
+                  fill={active ? comp.color : '#9aa8bc'}
+                  fontSize="14" fontFamily="monospace" fontWeight="bold" pointerEvents="none">
                   {hex(comp.value)}
                 </text>
               </g>
@@ -214,8 +224,8 @@ export default function BusView({ state, trace }: Props) {
                   : 'Reg' in t.source ? t.source.Reg
                   : 'Immediate' in t.source ? `#${t.source.Immediate}` : '?';
                 return (
-                  <text key={i} x="320" y="228" textAnchor="middle"
-                    fill="#94a3b8" fontSize="9" fontFamily="monospace">
+                  <text key={i} x="320" y="232" textAnchor="middle"
+                    fill="#b8c4d4" fontSize="14" fontFamily="monospace">
                     {srcName} → {t.dest} [{hex(t.value)} = {t.value}]
                   </text>
                 );
